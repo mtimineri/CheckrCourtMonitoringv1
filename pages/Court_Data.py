@@ -88,7 +88,7 @@ else:
             'Limited Operations': '#ffc107'  # Yellow
         }
 
-        # Create the map using Plotly
+        # Ensure status colors are applied correctly
         fig = px.scatter_mapbox(
             courts_with_coords,
             lat='lat',
@@ -98,12 +98,12 @@ else:
             hover_data=['name', 'type', 'address'],
             zoom=3,
             title="Court Locations by Status",
-            mapbox_style="open-street-map"  # Changed map style
+            mapbox_style="open-street-map"
         )
 
         # Update layout with custom marker styling
         fig.update_traces(
-            marker=dict(size=12),  # Increase marker size
+            marker=dict(size=12),
             selector=dict(mode='markers')
         )
 
@@ -113,6 +113,12 @@ else:
             legend_title="Court Status",
             showlegend=True
         )
+
+        # Force color scheme
+        for trace in fig.data:
+            status = trace.name
+            if status in status_colors:
+                trace.marker.color = status_colors[status]
 
         st.plotly_chart(fig, use_container_width=True)
 
