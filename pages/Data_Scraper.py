@@ -27,6 +27,13 @@ def get_db_connection():
         logger.error(f"Database connection error: {str(e)}")
         return None
 
+def return_db_connection(conn):
+    try:
+        if conn:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error closing database connection: {str(e)}")
+
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
     conn = None
@@ -73,41 +80,44 @@ def get_court_type_status(court_type: str):
             conn.close()
 
 def display_court_tab(court_type: str, get_courts_func):
-    """Display controls for a specific court type"""
+    """Display controls for a specific court type with improved error handling"""
     try:
         # Get current court data for selection
         conn = get_db_connection()
         if conn is None:
-            st.error("Unable to connect to database")
+            st.error("Unable to connect to database. Please try again later.")
             return
 
         try:
-            courts = get_courts_func(conn)
+            courts = get_courts_func(conn) if conn else []
             if courts is None:
                 courts = []
+                st.warning(f"No {court_type} courts data available")
         except Exception as e:
             logger.error(f"Error getting courts: {str(e)}")
             courts = []
+            st.error(f"Error retrieving {court_type} courts data: {str(e)}")
         finally:
-            conn.close()
+            if conn:
+                return_db_connection(conn)
 
         col1, col2 = st.columns([2, 1])
 
         with col1:
             # Only show multiselect if we have courts
-            court_names = [court['name'] for court in courts] if courts else []
+            court_names = [court.get('name', '') for court in courts if court.get('name')]
             selected_courts = st.multiselect(
                 f"Select specific {court_type} courts to scrape",
                 options=court_names,
                 help="Leave empty to scrape all courts"
             )
 
-            # Convert selected court names to IDs
+            # Convert selected court names to IDs with null checking
             selected_ids = None
             if selected_courts:
                 selected_ids = [
-                    court['id'] for court in courts
-                    if court['name'] in selected_courts
+                    court.get('id') for court in courts
+                    if court.get('name') in selected_courts and court.get('id') is not None
                 ]
 
             # Check if scraper is running
@@ -122,7 +132,7 @@ def display_court_tab(court_type: str, get_courts_func):
             if st.button(f"Start Scraping {court_type} Courts", disabled=is_running):
                 with st.status(f"Scraping {court_type} court data...") as status:
                     try:
-                        # Initialize scraper run
+                        # Initialize scraper run with proper error handling
                         total_courts = len(selected_courts) if selected_courts else len(courts)
 
                         if total_courts > 0:
@@ -141,10 +151,10 @@ def display_court_tab(court_type: str, get_courts_func):
                                     st.success(f"Successfully scraped {len(courts_data)} courts!")
                                 else:
                                     status.update(label="No data collected", state="error")
-                                    st.warning("No court data was collected")
+                                    st.warning("No court data was collected. Please check the logs for details.")
                             else:
                                 status.update(label="Failed to initialize scraper", state="error")
-                                st.error("Failed to initialize scraper")
+                                st.error("Failed to initialize scraper. Please check database connection.")
                         else:
                             status.update(label="No courts to scrape", state="error")
                             st.warning("No courts available to scrape")
@@ -191,7 +201,7 @@ def display_court_tab(court_type: str, get_courts_func):
 
     except Exception as e:
         logger.error(f"Error in display_court_tab: {str(e)}")
-        st.error(f"Error: {str(e)}")
+        st.error(f"An error occurred: {str(e)}")
 
 # Page configuration
 st.set_page_config(
