@@ -12,6 +12,37 @@ import psycopg2
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def get_court_stats():
+    """Get current court statistics"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return None
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 
+                type,
+                COUNT(*) as count,
+                MAX(last_updated) as latest_update,
+                COUNT(CASE WHEN status = 'Open' THEN 1 END) as open_courts,
+                COUNT(CASE WHEN status = 'Closed' THEN 1 END) as closed_courts,
+                COUNT(CASE WHEN status = 'Limited Operations' THEN 1 END) as limited_courts
+            FROM courts
+            GROUP BY type
+            ORDER BY type;
+        """)
+        return cur.fetchall()
+    except Exception as e:
+        logger.error(f"Error getting court stats: {str(e)}")
+        return None
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
 def get_court_sources():
     """Get all court sources with their status"""
     conn = get_db_connection()
@@ -48,8 +79,7 @@ def get_court_sources():
             LEFT JOIN source_stats ss ON ss.id = cs.id
             ORDER BY j.type, j.name, cs.source_url
         """)
-        sources = cur.fetchall()
-        return sources
+        return cur.fetchall()
     except Exception as e:
         logger.error(f"Error getting court sources: {str(e)}")
         return []
@@ -76,11 +106,11 @@ def get_inventory_status():
     try:
         cur.execute("""
             SELECT 
-                id, start_time, end_time, total_sources,
+                id, started_at, completed_at, total_sources,
                 sources_processed, status, message,
                 current_source, next_source, stage
             FROM inventory_updates
-            ORDER BY start_time DESC
+            ORDER BY started_at DESC
             LIMIT 1
         """)
         status = cur.fetchone()
@@ -107,13 +137,6 @@ def get_inventory_status():
         if conn:
             conn.close()
 
-def return_db_connection(conn):
-    try:
-        if conn:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error closing database connection: {str(e)}")
-
 # Page configuration
 st.set_page_config(
     page_title="Court Location Scraper | Court Monitoring Platform",
@@ -123,6 +146,45 @@ st.set_page_config(
 
 st.title("Court Location Scraper")
 st.markdown("Monitor and update the court location inventory")
+
+# Display court statistics
+stats = get_court_stats()
+if stats:
+    st.subheader("Current Court Statistics")
+
+    # Create a DataFrame for better display
+    stats_df = pd.DataFrame(stats, columns=[
+        'Court Type', 'Total Courts', 'Last Updated',
+        'Open Courts', 'Closed Courts', 'Limited Operations'
+    ])
+
+    # Display statistics in columns
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        total_courts = stats_df['Total Courts'].sum()
+        st.metric("Total Courts", f"{total_courts:,}")
+
+    with col2:
+        open_courts = stats_df['Open Courts'].sum()
+        st.metric("Open Courts", f"{open_courts:,} ({open_courts/total_courts*100:.1f}%)")
+
+    with col3:
+        latest_update = stats_df['Last Updated'].max()
+        st.metric("Latest Update", format_timestamp(latest_update))
+
+    # Display detailed statistics by court type
+    st.dataframe(
+        stats_df.style.format({
+            'Total Courts': '{:,}',
+            'Open Courts': '{:,}',
+            'Closed Courts': '{:,}',
+            'Limited Operations': '{:,}',
+            'Last Updated': lambda x: format_timestamp(x)
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
 
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])
@@ -138,8 +200,25 @@ with col1:
             with st.status("Updating court inventory...") as status:
                 court_type = update_type.lower().split()[0]
                 result = update_court_inventory(court_type=court_type)
+
                 if result.get('status') != 'error':
-                    st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
+                    # Get updated statistics
+                    new_stats = get_court_stats()
+                    if new_stats:
+                        new_stats_df = pd.DataFrame(new_stats, columns=[
+                            'Court Type', 'Total Courts', 'Last Updated',
+                            'Open Courts', 'Closed Courts', 'Limited Operations'
+                        ])
+
+                        st.success(f"""
+                            Update completed successfully:
+                            - Found {result.get('new_courts', 0)} new courts
+                            - Updated {result.get('updated_courts', 0)} existing courts
+                            - Total courts: {new_stats_df['Total Courts'].sum():,}
+                            - Latest update: {format_timestamp(new_stats_df['Last Updated'].max())}
+                        """)
+                    else:
+                        st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
                 else:
                     st.error(f"Error updating inventory: {result.get('message')}")
         except Exception as e:
