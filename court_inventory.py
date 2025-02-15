@@ -450,7 +450,7 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
         logger.error(f"Error processing source {url}: {str(e)}")
         return 0, 0
 
-def update_court_inventory() -> Dict:
+def update_court_inventory(court_type: str = 'all') -> Dict:
     """Update the court inventory from all active sources"""
     logger.info("Starting court inventory update...")
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
@@ -466,14 +466,27 @@ def update_court_inventory() -> Dict:
         update_id = cur.fetchone()[0]
         conn.commit()
 
-        # Get active sources that need updating
-        cur.execute("""
-            SELECT id, jurisdiction_id, source_url 
-            FROM court_sources
-            WHERE is_active = true
-            AND (last_checked IS NULL 
-                 OR last_checked < CURRENT_TIMESTAMP - interval '1 day')
-        """)
+        # Get active sources that need updating based on court type
+        if court_type == 'all':
+            cur.execute("""
+                SELECT id, jurisdiction_id, source_url 
+                FROM court_sources cs
+                JOIN jurisdictions j ON cs.jurisdiction_id = j.id
+                WHERE cs.is_active = true
+                AND (cs.last_checked IS NULL 
+                     OR cs.last_checked < CURRENT_TIMESTAMP - cs.update_frequency)
+            """)
+        else:
+            cur.execute("""
+                SELECT id, jurisdiction_id, source_url 
+                FROM court_sources cs
+                JOIN jurisdictions j ON cs.jurisdiction_id = j.id
+                WHERE cs.is_active = true
+                AND j.type = %s
+                AND (cs.last_checked IS NULL 
+                     OR cs.last_checked < CURRENT_TIMESTAMP - cs.update_frequency)
+            """, (court_type,))
+
         sources = cur.fetchall()
 
         total_sources = len(sources)
@@ -483,13 +496,29 @@ def update_court_inventory() -> Dict:
         # Update inventory tracking
         cur.execute("""
             UPDATE inventory_updates 
-            SET total_sources = %s
+            SET total_sources = %s,
+                message = %s
             WHERE id = %s
-        """, (total_sources, update_id))
+        """, (total_sources, f"Processing {court_type} courts" if court_type != 'all' else "Processing all courts", update_id))
         conn.commit()
 
         for i, (source_id, jurisdiction_id, url) in enumerate(sources, 1):
             logger.info(f"Processing source {i}/{total_sources}: {url}")
+
+            # Get jurisdiction type and name
+            cur.execute("""
+                SELECT j.type, j.name 
+                FROM jurisdictions j 
+                WHERE j.id = %s
+            """, (jurisdiction_id,))
+            j_type, j_name = cur.fetchone()
+
+            # Update status with jurisdiction details
+            update_scraper_status(update_id, i, total_sources, 'running',
+                                  f'Processing {j_type} jurisdiction: {j_name}',
+                                  current_court=j_name,
+                                  next_court=f"Next source in queue",
+                                  stage=f'Checking {j_type} courts')
 
             new_courts, updated_courts = process_court_source(source_id, url, jurisdiction_id)
             total_new_courts += new_courts
@@ -517,20 +546,29 @@ def update_court_inventory() -> Dict:
             conn.commit()
 
         # Mark update as complete
+        completion_message = (
+            f"Processed {total_sources} sources for {court_type} courts, "
+            f"found {total_new_courts} new courts, updated {total_updated_courts} existing courts"
+        ) if court_type != 'all' else (
+            f"Processed {total_sources} sources, "
+            f"found {total_new_courts} new courts, updated {total_updated_courts} existing courts"
+        )
+
         cur.execute("""
             UPDATE inventory_updates 
             SET status = 'completed',
                 completed_at = CURRENT_TIMESTAMP,
                 message = %s
             WHERE id = %s
-        """, (f"Processed {total_sources} sources, found {total_new_courts} new courts, updated {total_updated_courts} existing courts", update_id))
+        """, (completion_message, update_id))
         conn.commit()
 
         result = {
             'status': 'completed',
             'total_sources': total_sources,
             'new_courts': total_new_courts,
-            'updated_courts': total_updated_courts
+            'updated_courts': total_updated_courts,
+            'court_type': court_type
         }
         logger.info(f"Inventory update completed: {result}")
         return result
@@ -538,15 +576,39 @@ def update_court_inventory() -> Dict:
     except Exception as e:
         error_message = f"Error updating court inventory: {str(e)}"
         logger.error(error_message)
-        cur.execute("""
-            UPDATE inventory_updates 
-            SET status = 'error',
-                completed_at = CURRENT_TIMESTAMP,
-                message = %s
-            WHERE id = %s
-        """, (error_message, update_id))
-        conn.commit()
+        if update_id:
+            cur.execute("""
+                UPDATE inventory_updates 
+                SET status = 'error',
+                    completed_at = CURRENT_TIMESTAMP,
+                    message = %s
+                WHERE id = %s
+            """, (error_message, update_id))
+            conn.commit()
         raise
+    finally:
+        cur.close()
+        conn.close()
+
+def update_scraper_status(update_id, source_processed, total_sources, status, message, current_court=None, next_court=None, stage=None):
+    """Updates the status of the scraper run."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE inventory_updates
+            SET sources_processed = %s,
+                status = %s,
+                message = %s,
+                current_court = %s,
+                next_court = %s,
+                stage = %s
+            WHERE id = %s
+        """, (source_processed, status, message, current_court, next_court, stage, update_id))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating scraper status: {str(e)}")
+        conn.rollback()
     finally:
         cur.close()
         conn.close()
@@ -723,8 +785,7 @@ def initialize_base_courts() -> None:
             """, (
                 f"U.S. Bankruptcy Court for the {district}",
                 url,
-                federal_id,
-                f"Federal Courthouse, {location}",
+                federal_id,                f"Federal Courthouse, {location}",
                 lat,
                 lon
             ))
