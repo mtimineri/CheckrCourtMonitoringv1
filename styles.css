@@ -7,6 +7,24 @@
 .header {
     color: #0B3D91;
     margin-bottom: 2rem;
+    position: relative;
+    padding-top: 1rem;
+}
+
+.logo {
+    position: absolute;
+    top: 0;
+    left: 0;
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #0B3D91;
+    padding: 0.5rem;
+    border-radius: 4px;
+}
+
+.header h1 {
+    margin-top: 2rem;
+    text-align: center;
 }
 
 /* Sidebar Styles */

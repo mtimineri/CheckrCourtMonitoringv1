@@ -7,7 +7,7 @@ from components.court_info import display_court_info, display_status_legend
 
 # Page configuration
 st.set_page_config(
-    page_title="Checkr Court Monitoring Platform",
+    page_title="Court Monitoring Platform",
     page_icon="⚖️",
     layout="wide"
 )
@@ -20,10 +20,11 @@ with open('styles.css') as f:
 if 'selected_court' not in st.session_state:
     st.session_state.selected_court = None
 
-# Header
+# Header with Checkr logo
 st.markdown("""
     <div class='header'>
-        <h1>Checkr Court Monitoring Platform</h1>
+        <div class='logo'>Checkr</div>
+        <h1>Court Monitoring Platform</h1>
         <p>Real-time status monitoring of United States courts</p>
     </div>
 """, unsafe_allow_html=True)
@@ -55,20 +56,25 @@ with col1:
     # Display map
     st.markdown("<div class='map-container'>", unsafe_allow_html=True)
     fig = create_court_map(filtered_df, st.session_state.selected_court)
-    selected_point = st.plotly_chart(fig, use_container_width=True)
+
+    # Handle map click events using Streamlit's built-in click_event
+    clicked_point = st.plotly_chart(fig, use_container_width=True)
+    if clicked_point is not None:
+        # Access the clicked data directly from the Plotly event
+        clicked_data = clicked_point.get("clickData")
+        if clicked_data and clicked_data.get("points"):
+            clicked_court = clicked_data["points"][0]["text"]
+            if clicked_court != st.session_state.selected_court:
+                st.session_state.selected_court = clicked_court
+                st.experimental_rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 with col2:
     # Display status legend
     display_status_legend()
-    
+
     # Display court information
     if st.session_state.selected_court:
         court_info = df[df['name'] == st.session_state.selected_court].iloc[0].to_dict()
         display_court_info(court_info)
-
-# Handle map click events
-if selected_point and selected_point.get('points'):
-    clicked_court = selected_point['points'][0]['text']
-    st.session_state.selected_court = clicked_court
-    st.experimental_rerun()
