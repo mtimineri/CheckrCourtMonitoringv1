@@ -8,17 +8,14 @@ from court_types import federal_courts, state_courts, county_courts
 import psycopg2
 import os
 
-
 def format_timestamp(ts):
     """Format timestamp for display"""
     if ts is None:
         return "N/A"
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-
 def get_db_connection():
     return psycopg2.connect(os.environ['DATABASE_URL'])
-
 
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
@@ -54,26 +51,24 @@ def get_court_type_status(court_type: str):
         cur.close()
         conn.close()
 
-
 # Page configuration
-st.set_page_config(page_title="Scraper Control | Court Monitoring Platform",
-                   page_icon="⚖️",
-                   layout="wide")
-
-st.title("Court Data Scraper Control")
-st.markdown(
-    "Control and monitor the court data scraping process by jurisdiction level"
+st.set_page_config(
+    page_title="Scraper Control | Court Monitoring Platform",
+    page_icon="⚖️",
+    layout="wide"
 )
 
+st.title("Court Data Scraper Control")
+st.markdown("Control and monitor the court data scraping process by jurisdiction level")
+
 # Create tabs for different control sections
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Federal Courts", "State Courts", "County Courts", "Schedule Settings"])
+tab1, tab2, tab3, tab4 = st.tabs(["Federal Courts", "State Courts", "County Courts", "Schedule Settings"])
 
-
-def display_court_tab(court_type: str, get_courts_func, scrape_func):
+def display_court_tab(court_type: str, get_courts_func):
     """Display controls for a specific court type"""
-    conn = get_db_connection()
+    conn = None
     try:
+        conn = get_db_connection()
         # Get current court data for selection
         courts = get_courts_func(conn)
 
@@ -83,7 +78,8 @@ def display_court_tab(court_type: str, get_courts_func, scrape_func):
             selected_courts = st.multiselect(
                 f"Select specific {court_type} courts to scrape",
                 options=[court['name'] for court in courts] if courts else [],
-                help="Leave empty to scrape all courts")
+                help="Leave empty to scrape all courts"
+            )
 
             # Convert selected court names to IDs
             selected_ids = None
@@ -100,19 +96,15 @@ def display_court_tab(court_type: str, get_courts_func, scrape_func):
                 message_container = st.empty()
 
                 try:
-                    with status_container.status(
-                            f"Scraping {court_type} court data...") as status:
+                    with status_container.status(f"Scraping {court_type} court data...") as status:
                         status.write("Initializing scraper...")
-                        # Pass court_type as a single argument
-                        courts_data = scrape_courts(selected_ids, court_type.lower())
+                        courts_data = scrape_courts(court_ids=selected_ids, court_type=court_type.lower())
 
                         if courts_data:
-                            status.update(label="Updating database...",
-                                        state="running")
-                            update_database(courts_data, court_type=court_type.lower())
+                            status.update(label="Updating database...", state="running")
+                            update_database(courts_data)
                             status.update(label="Completed!", state="complete")
-                            st.success(
-                                f"Successfully scraped {len(courts_data)} courts!")
+                            st.success(f"Successfully scraped {len(courts_data)} courts!")
                         else:
                             status.update(label="No data collected", state="error")
                             st.warning("No court data was collected")
@@ -128,14 +120,16 @@ def display_court_tab(court_type: str, get_courts_func, scrape_func):
             # Create metrics
             metric_cols = st.columns(3)
             with metric_cols[0]:
-                progress = (status['courts_processed'] / status['total_courts'] * 
-                          100 if status['total_courts'] else 0)
+                progress = (status['courts_processed'] / status['total_courts'] * 100 
+                          if status['total_courts'] else 0)
                 st.metric("Progress", f"{progress:.1f}%")
 
             with metric_cols[1]:
-                st.metric("Courts Processed",
-                         f"{status['courts_processed']}/{status['total_courts']}"
-                         if status['total_courts'] else "0/0")
+                st.metric(
+                    "Courts Processed",
+                    f"{status['courts_processed']}/{status['total_courts']}"
+                    if status['total_courts'] else "0/0"
+                )
 
             with metric_cols[2]:
                 st.metric("Status", status['status'].title())
@@ -159,23 +153,23 @@ def display_court_tab(court_type: str, get_courts_func, scrape_func):
                 time.sleep(2)
                 st.rerun()
 
+    except Exception as e:
+        st.error(f"Error accessing court data: {str(e)}")
     finally:
-        conn.close()
-
+        if conn:
+            conn.close()
 
 with tab1:
     st.header("Federal Courts")
-    display_court_tab("Federal", federal_courts.get_federal_courts,
-                     scrape_courts)
+    display_court_tab("Federal", federal_courts.get_federal_courts)
 
 with tab2:
     st.header("State Courts")
-    display_court_tab("State", state_courts.get_state_courts, scrape_courts)
+    display_court_tab("State", state_courts.get_state_courts)
 
 with tab3:
     st.header("County Courts")
-    display_court_tab("County", county_courts.get_county_courts,
-                     scrape_courts)
+    display_court_tab("County", county_courts.get_county_courts)
 
 with tab4:
     st.header("Scheduled Scraping")
@@ -187,20 +181,20 @@ with tab4:
             court_types = st.multiselect(
                 "Select Court Types to Scrape",
                 options=["Federal Courts", "State Courts", "County Courts"],
-                default=["Federal Courts"])
+                default=["Federal Courts"]
+            )
 
             frequency = st.selectbox(
                 "Scraping Frequency",
                 options=["Every 6 hours", "Every 12 hours", "Daily", "Weekly"],
-                index=2)
+                index=2
+            )
 
         with col2:
             start_time = st.time_input(
                 "Start Time (First Run)",
-                value=datetime.now().replace(hour=0,
-                                          minute=0,
-                                          second=0,
-                                          microsecond=0))
+                value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            )
 
         if st.button("Save Schedule"):
             try:
