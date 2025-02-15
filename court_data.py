@@ -98,32 +98,29 @@ def initialize_database():
         return
     cur = conn.cursor()
 
-    # First drop the existing foreign key constraint if it exists
     try:
+        # First drop the existing foreign key constraint if it exists
         cur.execute("""
             ALTER TABLE scraper_logs 
             DROP CONSTRAINT IF EXISTS scraper_logs_scraper_run_id_fkey;
         """)
-    except Exception as e:
-        logger.error(f"Error dropping constraint: {str(e)}")
 
-    try:
+        # Create inventory_updates table for Location Scraper
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS courts (
+            CREATE TABLE IF NOT EXISTS inventory_updates (
                 id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                type VARCHAR(50) NOT NULL,
-                status VARCHAR(50) NOT NULL,
-                lat FLOAT NOT NULL,
-                lon FLOAT NOT NULL,
-                address TEXT NOT NULL,
-                image_url TEXT NOT NULL,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                maintenance_notice TEXT,
-                maintenance_start TIMESTAMP,
-                maintenance_end TIMESTAMP
+                start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                end_time TIMESTAMP,
+                sources_processed INTEGER DEFAULT 0,
+                total_sources INTEGER,
+                status VARCHAR(50) DEFAULT 'running',
+                message TEXT,
+                current_source TEXT,
+                next_source TEXT,
+                stage TEXT
             );
 
+            -- Create scraper_status table for Data Scraper
             CREATE TABLE IF NOT EXISTS scraper_status (
                 id SERIAL PRIMARY KEY,
                 start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -138,12 +135,16 @@ def initialize_database():
                 court_type VARCHAR(50)
             );
 
+            -- Create scraper_logs table that can reference both systems
             CREATE TABLE IF NOT EXISTS scraper_logs (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 level VARCHAR(20) NOT NULL,
                 message TEXT NOT NULL,
-                scraper_run_id INTEGER REFERENCES scraper_status(id)
+                scraper_run_id INTEGER,
+                inventory_run_id INTEGER,
+                FOREIGN KEY (scraper_run_id) REFERENCES scraper_status(id),
+                FOREIGN KEY (inventory_run_id) REFERENCES inventory_updates(id)
             );
 
             CREATE TABLE IF NOT EXISTS api_usage (
@@ -265,7 +266,7 @@ def get_scraper_logs(limit=50):
         cur.close()
         return_db_connection(conn)
 
-def add_scraper_log(level, message, scraper_run_id=None):
+def add_scraper_log(level, message, scraper_run_id=None, inventory_run_id=None):
     """Add a new scraper log entry"""
     conn = get_db_connection()
     if conn is None:
@@ -274,9 +275,9 @@ def add_scraper_log(level, message, scraper_run_id=None):
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO scraper_logs (level, message, scraper_run_id)
-            VALUES (%s, %s, %s)
-        """, (level, message, scraper_run_id))
+            INSERT INTO scraper_logs (level, message, scraper_run_id, inventory_run_id)
+            VALUES (%s, %s, %s, %s)
+        """, (level, message, scraper_run_id, inventory_run_id))
         conn.commit()
     except Exception as e:
         logger.error(f"Error adding scraper log: {str(e)}")

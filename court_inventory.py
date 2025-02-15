@@ -7,7 +7,6 @@ import os
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
-from court_data import update_scraper_status, get_db_connection
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -466,19 +465,16 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
 def update_court_inventory(court_type: str = 'all') -> Dict:
     """Update the court inventory from all active sources"""
     logger.info("Starting court inventory update...")
+    update_id = initialize_inventory_run()
+    if update_id is None:
+        logger.error("Failed to initialize inventory run")
+        return {'status': 'error', 'message': 'Failed to initialize inventory run'}
+
     conn = get_db_connection()
     cur = conn.cursor()
-    update_id = None
+
 
     try:
-        # Create new update record
-        cur.execute("""
-            INSERT INTO inventory_updates (status, message)
-            VALUES ('running', 'Initializing inventory update')
-            RETURNING id
-        """)
-        update_id = cur.fetchone()[0]
-        conn.commit()
 
         # Get active sources that need updating based on court type
         if court_type == 'all':
@@ -848,6 +844,95 @@ def build_court_inventory() -> List[Dict]:
     except Exception as e:
         logger.error(f"Error building court inventory: {str(e)}")
         return []
+
+def return_db_connection(conn):
+    try:
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error closing database connection: {str(e)}")
+
+def update_scraper_status(update_id: int, sources_processed: int, total_sources: int, 
+                         status: str, message: str, current_source: str = None, 
+                         next_source: str = None, stage: str = None):
+    """Updates the status of the inventory update run"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return
+    cur = conn.cursor()
+    try:
+        if status == 'completed':
+            cur.execute("""
+                UPDATE inventory_updates 
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_source = %s,
+                    next_source = %s,
+                    stage = %s,
+                    completed_at = CURRENT_TIMESTAMP,
+                    end_time = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (sources_processed, total_sources, status, message, 
+                  current_source, next_source, stage, update_id))
+        else:
+            cur.execute("""
+                UPDATE inventory_updates
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_source = %s,
+                    next_source = %s,
+                    stage = %s
+                WHERE id = %s
+            """, (sources_processed, total_sources, status, message,
+                  current_source, next_source, stage, update_id))
+
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating inventory status: {str(e)}")
+        conn.rollback()
+    finally:
+        cur.close()
+        return_db_connection(conn)
+
+def get_db_connection():
+    try:
+        return psycopg2.connect(os.environ['DATABASE_URL'])
+    except Exception as e:
+        logger.error(f"Error connecting to database: {str(e)}")
+        return None
+
+def initialize_inventory_run() -> Optional[int]:
+    """Initialize a new inventory run and return its ID"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            return None
+
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO inventory_updates 
+            (status, message, sources_processed, total_sources)
+            VALUES ('running', 'Initializing inventory update', 0, 0)
+            RETURNING id
+        """)
+
+        run_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        return run_id
+
+    except Exception as e:
+        logger.error(f"Error initializing inventory run: {str(e)}")
+        return None
+    finally:
+        if conn:
+            return_db_connection(conn)
 
 if __name__ == "__main__":
     try:
