@@ -89,7 +89,7 @@ def display_court_tab(court_type: str, get_courts_func):
                     if court['name'] in selected_courts
                 ]
 
-            # Check if any other scraper is running for this court type
+            # Check if any scraper is running for this court type
             current_status = get_court_type_status(court_type)
             is_running = current_status and current_status['status'] == 'running'
 
@@ -101,24 +101,33 @@ def display_court_tab(court_type: str, get_courts_func):
 
                 try:
                     with status_container.status(f"Scraping {court_type} court data...") as status:
-                        # Initialize scraper run
-                        total_courts = len(selected_courts) if selected_courts else len(courts)
-                        run_id = initialize_scraper_run(total_courts)
+                        # Initialize scraper run with proper total courts count
+                        total_courts = len(selected_courts) if selected_courts else (len(courts) if courts else 0)
 
-                        status.write(f"Starting scraper for {court_type} courts...")
-                        courts_data = scrape_courts(
-                            court_ids=selected_ids,
-                            court_type=court_type.lower()
-                        )
+                        if total_courts > 0:
+                            run_id = initialize_scraper_run(total_courts)
+                            if run_id is None:
+                                status.update(label="Failed to initialize scraper", state="error")
+                                st.error("Failed to initialize the scraper. Please try again.")
+                                return
 
-                        if courts_data:
-                            status.update(label="Updating database...", state="running")
-                            update_database(courts_data)
-                            status.update(label="Completed!", state="complete")
-                            st.success(f"Successfully scraped {len(courts_data)} courts!")
+                            status.write(f"Starting scraper for {court_type} courts...")
+                            courts_data = scrape_courts(
+                                court_ids=selected_ids,
+                                court_type=court_type.lower()
+                            )
+
+                            if courts_data:
+                                status.update(label="Updating database...", state="running")
+                                update_database(courts_data)
+                                status.update(label="Completed!", state="complete")
+                                st.success(f"Successfully scraped {len(courts_data)} courts!")
+                            else:
+                                status.update(label="No data collected", state="error")
+                                st.warning("No court data was collected")
                         else:
-                            status.update(label="No data collected", state="error")
-                            st.warning("No court data was collected")
+                            status.update(label="No courts to scrape", state="error")
+                            st.warning("No courts available to scrape")
 
                 except Exception as e:
                     status_container.error(f"Error during scraping: {str(e)}")
