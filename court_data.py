@@ -286,5 +286,58 @@ def get_api_usage_stats():
         'recent': recent_calls
     }
 
+def get_filtered_court_data(filters=None):
+    """Get court data with optional filters"""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    query = """
+        SELECT 
+            c.id, c.name, c.type, c.status, c.address, c.lat, c.lon,
+            j.name as jurisdiction_name, j.type as jurisdiction_type,
+            p.name as parent_jurisdiction
+        FROM courts c
+        LEFT JOIN jurisdictions j ON c.jurisdiction_id = j.id
+        LEFT JOIN jurisdictions p ON j.parent_id = p.id
+        WHERE 1=1
+    """
+    params = []
+
+    if filters:
+        if filters.get('status'):
+            query += " AND c.status = %s"
+            params.append(filters['status'])
+
+        if filters.get('type'):
+            query += " AND c.type = %s"
+            params.append(filters['type'])
+
+        if filters.get('jurisdiction'):
+            query += " AND (j.name = %s OR p.name = %s)"
+            params.extend([filters['jurisdiction'], filters['jurisdiction']])
+
+        if filters.get('search'):
+            query += " AND (c.name ILIKE %s OR c.address ILIKE %s)"
+            search_term = f"%{filters['search']}%"
+            params.extend([search_term, search_term])
+
+    query += " ORDER BY c.name"
+
+    cur.execute(query, params)
+    data = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    if data:
+        df = pd.DataFrame(data)
+        return df
+    else:
+        return pd.DataFrame(columns=[
+            'id', 'name', 'type', 'status', 'address', 'lat', 'lon',
+            'jurisdiction_name', 'jurisdiction_type', 'parent_jurisdiction'
+        ])
+
+
 # Initialize the database when the module is imported
 initialize_database()
