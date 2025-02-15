@@ -5,11 +5,59 @@ from datetime import datetime
 import time
 from court_inventory import update_court_inventory, update_scraper_status
 from court_types import federal_courts, state_courts, county_courts
-
 import logging
+import os
+import psycopg2
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def get_court_sources():
+    """Get all court sources with their status"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return []
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            WITH source_stats AS (
+                SELECT 
+                    cs.id,
+                    COUNT(c.id) as court_count,
+                    MAX(c.last_updated) as latest_update
+                FROM court_sources cs
+                LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
+                GROUP BY cs.id
+            )
+            SELECT 
+                cs.id,
+                j.name as jurisdiction,
+                j.type as jurisdiction_type,
+                cs.source_url,
+                cs.last_checked,
+                cs.last_updated,
+                cs.is_active,
+                EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
+                ss.court_count,
+                ss.latest_update,
+                j.parent_id
+            FROM court_sources cs
+            JOIN jurisdictions j ON cs.jurisdiction_id = j.id
+            LEFT JOIN source_stats ss ON ss.id = cs.id
+            ORDER BY j.type, j.name, cs.source_url
+        """)
+        sources = cur.fetchall()
+        return sources
+    except Exception as e:
+        logger.error(f"Error getting court sources: {str(e)}")
+        return []
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 def format_timestamp(ts):
     """Format timestamp for display"""
@@ -224,48 +272,3 @@ The update process will:
 3. Add new courts to the database
 4. Update information for existing courts
 """)
-
-def get_court_sources():
-    """Get all court sources with their status"""
-    conn = get_db_connection()
-    if conn is None:
-        logger.error("Failed to get database connection")
-        return []
-
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            WITH source_stats AS (
-                SELECT 
-                    cs.id,
-                    COUNT(c.id) as court_count,
-                    MAX(c.last_updated) as latest_update
-                FROM court_sources cs
-                LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
-                GROUP BY cs.id
-            )
-            SELECT 
-                cs.id,
-                j.name as jurisdiction,
-                j.type as jurisdiction_type,
-                cs.source_url,
-                cs.last_checked,
-                cs.last_updated,
-                cs.is_active,
-                EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
-                ss.court_count,
-                ss.latest_update,
-                j.parent_id
-            FROM court_sources cs
-            JOIN jurisdictions j ON cs.jurisdiction_id = j.id
-            LEFT JOIN source_stats ss ON ss.id = cs.id
-            ORDER BY j.type, j.name, cs.source_url
-        """)
-        sources = cur.fetchall()
-        return sources
-    except Exception as e:
-        logger.error(f"Error getting court sources: {str(e)}")
-        return []
-    finally:
-        return_db_connection(cur)
-        return_db_connection(conn)
