@@ -98,57 +98,73 @@ def initialize_database():
         return
     cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS courts (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            type VARCHAR(50) NOT NULL,
-            status VARCHAR(50) NOT NULL,
-            lat FLOAT NOT NULL,
-            lon FLOAT NOT NULL,
-            address TEXT NOT NULL,
-            image_url TEXT NOT NULL,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            maintenance_notice TEXT,
-            maintenance_start TIMESTAMP,
-            maintenance_end TIMESTAMP
-        );
+    # First drop the existing foreign key constraint if it exists
+    try:
+        cur.execute("""
+            ALTER TABLE scraper_logs 
+            DROP CONSTRAINT IF EXISTS scraper_logs_scraper_run_id_fkey;
+        """)
+    except Exception as e:
+        logger.error(f"Error dropping constraint: {str(e)}")
 
-        CREATE TABLE IF NOT EXISTS scraper_status (
-            id SERIAL PRIMARY KEY,
-            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            end_time TIMESTAMP,
-            courts_processed INTEGER DEFAULT 0,
-            total_courts INTEGER,
-            status VARCHAR(50) DEFAULT 'running',
-            message TEXT,
-            current_court TEXT,
-            next_court TEXT,
-            stage TEXT
-        );
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS courts (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                type VARCHAR(50) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                lat FLOAT NOT NULL,
+                lon FLOAT NOT NULL,
+                address TEXT NOT NULL,
+                image_url TEXT NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                maintenance_notice TEXT,
+                maintenance_start TIMESTAMP,
+                maintenance_end TIMESTAMP
+            );
 
-        CREATE TABLE IF NOT EXISTS scraper_logs (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            level VARCHAR(20) NOT NULL,
-            message TEXT NOT NULL,
-            scraper_run_id INTEGER REFERENCES scraper_status(id)
-        );
+            CREATE TABLE IF NOT EXISTS scraper_status (
+                id SERIAL PRIMARY KEY,
+                start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                end_time TIMESTAMP,
+                courts_processed INTEGER DEFAULT 0,
+                total_courts INTEGER,
+                status VARCHAR(50) DEFAULT 'running',
+                message TEXT,
+                current_court TEXT,
+                next_court TEXT,
+                stage TEXT,
+                court_type VARCHAR(50)
+            );
 
-        CREATE TABLE IF NOT EXISTS api_usage (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            endpoint VARCHAR(50) NOT NULL,
-            tokens_used INTEGER NOT NULL,
-            model VARCHAR(50) NOT NULL,
-            success BOOLEAN NOT NULL,
-            error_message TEXT
-        );
-    """)
+            CREATE TABLE IF NOT EXISTS scraper_logs (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                level VARCHAR(20) NOT NULL,
+                message TEXT NOT NULL,
+                scraper_run_id INTEGER REFERENCES scraper_status(id)
+            );
 
-    conn.commit()
-    cur.close()
-    return_db_connection(conn)
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                endpoint VARCHAR(50) NOT NULL,
+                tokens_used INTEGER NOT NULL,
+                model VARCHAR(50) NOT NULL,
+                success BOOLEAN NOT NULL,
+                error_message TEXT
+            );
+        """)
+
+        conn.commit()
+        logger.info("Database schema initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        conn.rollback()
+    finally:
+        cur.close()
+        return_db_connection(conn)
 
 def get_court_data():
     """Get all court data from the database"""
