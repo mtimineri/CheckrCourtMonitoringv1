@@ -57,16 +57,16 @@ with col1:
     st.markdown("<div class='map-container'>", unsafe_allow_html=True)
     fig = create_court_map(filtered_df, st.session_state.selected_court)
 
-    # Handle map click events using Streamlit's built-in click_event
-    clicked_point = st.plotly_chart(fig, use_container_width=True)
-    if clicked_point is not None:
-        # Access the clicked data directly from the Plotly event
-        clicked_data = clicked_point.get("clickData")
-        if clicked_data and clicked_data.get("points"):
-            clicked_court = clicked_data["points"][0]["text"]
+    # Handle map click events
+    clicked_data = st.plotly_chart(fig, use_container_width=True, return_value=True)
+    if clicked_data:
+        try:
+            clicked_court = clicked_data['points'][0]['text']
             if clicked_court != st.session_state.selected_court:
                 st.session_state.selected_court = clicked_court
                 st.experimental_rerun()
+        except (KeyError, IndexError, TypeError):
+            pass
 
     st.markdown("</div>", unsafe_allow_html=True)
 
