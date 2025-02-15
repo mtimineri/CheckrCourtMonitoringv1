@@ -1,0 +1,39 @@
+Instructions for pushing code to GitHub:
+
+1. First, configure your Git user information (if not already done):
+   ```bash
+   git config --global user.name "Your Name"
+   git config --global user.email "your.email@example.com"
+   ```
+
+2. Initialize Git repository (if not already done):
+   ```bash
+   git init
+   ```
+
+3. Add all files to Git:
+   ```bash
+   git add .
+   ```
+
+4. Commit your changes:
+   ```bash
+   git commit -m "Initial commit: Court Monitoring Platform"
+   ```
+
+5. Add the GitHub repository as remote:
+   ```bash
+   git remote add origin https://github.com/mtimineri/CheckrCourtMonitoringv1.git
+   ```
+   (If remote already exists, you can remove it first with: git remote remove origin)
+
+6. Push the code to GitHub:
+   ```bash
+   git push -u origin main
+   ```
+
+Note: When you run the push command, GitHub will prompt you to authenticate. You can either:
+- Enter your GitHub username and password (if you have 2FA enabled, you'll need to use a personal access token instead of password)
+- Or use GitHub's browser-based authentication if it pops up
+
+If you encounter any issues, please let me know!
