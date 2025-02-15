@@ -23,6 +23,10 @@ args = "Court Scraper"
 task = "workflow.run"
 args = "Streamlit App"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Scheduled Court Scraper"
+
 [[workflows.workflow]]
 name = "Court Scraper"
 author = "agent"
@@ -51,6 +55,20 @@ task = "packager.installForAll"
 task = "shell.exec"
 args = "streamlit run Court_Map.py"
 waitForPort = 5000
+
+[[workflows.workflow]]
+name = "Scheduled Court Scraper"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python -c 'from court_scraper import scrape_courts, update_database; courts_data = scrape_courts(); update_database(courts_data)'"
 
 [[ports]]
 localPort = 5000
