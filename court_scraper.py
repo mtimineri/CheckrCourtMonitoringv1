@@ -6,7 +6,7 @@ import os
 import time
 import logging
 from typing import List, Dict, Optional
-from court_data import update_scraper_status, add_scraper_log, log_api_usage, get_db_connection
+from court_data import update_scraper_status, add_scraper_log, log_api_usage, get_db_connection, return_db_connection # Added return_db_connection
 from datetime import datetime
 from court_types import federal_courts, state_courts, county_courts
 
@@ -18,11 +18,15 @@ def initialize_scraper_run(total_courts: int) -> Optional[int]:
     """Initialize a new scraper run and return its ID"""
     try:
         conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            return None
+
         cur = conn.cursor()
 
         cur.execute("""
-            INSERT INTO inventory_updates 
-            (total_sources, sources_processed, status, message)
+            INSERT INTO scraper_status 
+            (total_courts, courts_processed, status, message)
             VALUES (%s, 0, 'running', 'Initializing scraper')
             RETURNING id
         """, (total_courts,))
@@ -30,7 +34,7 @@ def initialize_scraper_run(total_courts: int) -> Optional[int]:
         run_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
-        conn.close()
+        return_db_connection(conn)
         return run_id
     except Exception as e:
         logger.error(f"Error initializing scraper run: {str(e)}")
