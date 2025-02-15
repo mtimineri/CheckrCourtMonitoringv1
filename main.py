@@ -22,7 +22,7 @@ if 'selected_court' not in st.session_state:
     st.session_state.selected_court = None
 
 # Navigation
-page = st.sidebar.radio("Navigation", ["Map View", "Dashboard"])
+page = st.sidebar.radio("Navigation", ["Dashboard", "Scraper Status"])
 
 # Header with Checkr logo
 st.markdown("""
@@ -33,7 +33,7 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-if page == "Map View":
+if page == "Dashboard":
     # Load data
     df = get_court_data()
     court_types = get_court_types()
@@ -85,5 +85,5 @@ if page == "Map View":
             display_court_info(court_info)
 
 else:
-    # Render dashboard page
+    # Render scraper status page
     render_dashboard()
