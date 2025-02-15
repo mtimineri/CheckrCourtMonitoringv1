@@ -93,14 +93,21 @@ else:
             color_discrete_map=status_colors,
             hover_data=['name', 'type', 'address'],
             zoom=3,
-            title="Court Locations by Status"
+            title="Court Locations by Status",
+            mapbox_style="open-street-map"  # Changed map style
+        )
+
+        # Update layout with custom marker styling
+        fig.update_traces(
+            marker=dict(size=12),  # Increase marker size
+            selector=dict(mode='markers')
         )
 
         fig.update_layout(
-            mapbox_style="carto-positron",
             margin={"r":0,"t":30,"l":0,"b":0},
             height=600,
-            legend_title="Court Status"
+            legend_title="Court Status",
+            showlegend=True
         )
 
         st.plotly_chart(fig, use_container_width=True)
