@@ -35,7 +35,7 @@ task = "packager.installForAll"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python court_scraper.py"
+args = "python court_inventory.py"
 
 [[workflows.workflow]]
 name = "Streamlit App"
