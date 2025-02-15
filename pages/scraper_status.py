@@ -16,7 +16,22 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown("<h1 class='header'>Scraper Status and Court Data</h1>", unsafe_allow_html=True)
+# Add navigation
+st.sidebar.title("Navigation")
+pages = {
+    "Court Map": ".",
+    "Scraper Status": "Scraper_Status"
+}
+st.sidebar.markdown(
+    "\n".join(
+        f"- [{'**' if p == 'Scraper Status' else ''}{p}{'**' if p == 'Scraper Status' else ''}]({'/' + url if url != '.' else '/'})"
+        for p, url in pages.items()
+    ),
+    unsafe_allow_html=True
+)
+
+st.markdown("<h1 class='header'>Court Monitoring Platform</h1>", unsafe_allow_html=True)
+st.markdown("### Scraper Status and Court Data")
 st.markdown("Monitor court data collection progress and view court information")
 
 # Display scraper status
@@ -44,10 +59,8 @@ if status:
 
     # Add expandable logs section
     with st.expander("Scraper Logs", expanded=True):
-        # Create a placeholder for logs that we'll update
         logs_placeholder = st.empty()
 
-        # Function to display logs
         def display_logs():
             logs = get_scraper_logs()
             if logs:
@@ -61,10 +74,8 @@ if status:
             else:
                 logs_placeholder.info("No logs available")
 
-        # Initial display
         display_logs()
 
-        # Auto-refresh logs if scraper is running
         if status['status'] == 'running':
             st.markdown("*Logs auto-refresh every 5 seconds while scraper is running*")
             time.sleep(5)
@@ -77,30 +88,11 @@ df = get_court_data()
 if df.empty:
     st.warning("No court data available. Please run the scraper to collect data.")
 else:
-    # Add filters
-    col1, col2 = st.columns(2)
-    with col1:
-        search = st.text_input("Search courts", "")
+    # Add search filter
+    search = st.text_input("Search courts", "")
 
-    # Only show status filter if we have the status column
-    with col2:
-        if 'status' in df.columns:
-            available_statuses = df['status'].unique()
-            status_filter = st.multiselect(
-                "Filter by status",
-                options=available_statuses,
-                default=available_statuses
-            )
-        else:
-            status_filter = []
-            st.warning("Status information not available")
-
-    # Apply filters
+    # Apply search filter
     filtered_df = df.copy()
-
-    if status_filter and 'status' in df.columns:
-        filtered_df = filtered_df[filtered_df['status'].isin(status_filter)]
-
     if search:
         search_mask = pd.Series(False, index=filtered_df.index)
         for col in ['name', 'address']:
@@ -118,4 +110,4 @@ else:
             hide_index=True
         )
     else:
-        st.info("No courts match the selected filters.")
+        st.info("No courts match the search criteria.")

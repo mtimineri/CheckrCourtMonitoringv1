@@ -7,10 +7,23 @@ from components.court_info import display_court_info, display_status_legend
 
 # Page configuration
 st.set_page_config(
-    page_title="Map | Court Monitoring Platform",
+    page_title="Court Map | Court Monitoring Platform",
     page_icon="⚖️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
+)
+
+# Add navigation
+st.sidebar.title("Navigation")
+pages = {
+    "Court Map": ".",
+    "Scraper Status": "Scraper_Status"
+}
+st.sidebar.markdown(
+    "\n".join(
+        f"- [{'**' if p == 'Court Map' else ''}{p}{'**' if p == 'Court Map' else ''}]({'/' + url if url != '.' else '/'})"
+        for p, url in pages.items()
+    ),
+    unsafe_allow_html=True
 )
 
 # Hide default menu
@@ -36,6 +49,7 @@ st.markdown("""
 # Load custom CSS
 with open('styles.css') as f:
     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
 
 # Initialize session state
 if 'selected_court' not in st.session_state:
