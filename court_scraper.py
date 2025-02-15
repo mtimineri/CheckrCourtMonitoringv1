@@ -14,6 +14,29 @@ from court_types import federal_courts, state_courts, county_courts
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def initialize_scraper_run(total_courts: int) -> Optional[int]:
+    """Initialize a new scraper run and return its ID"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO inventory_updates 
+            (total_sources, sources_processed, status, message)
+            VALUES (%s, 0, 'running', 'Initializing scraper')
+            RETURNING id
+        """, (total_courts,))
+
+        run_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return run_id
+    except Exception as e:
+        logger.error(f"Error initializing scraper run: {str(e)}")
+        return None
+
 def get_court_data_from_url(url: str) -> Optional[str]:
     """Fetch and extract text content from a URL"""
     try:
@@ -32,7 +55,7 @@ def get_court_data_from_url(url: str) -> Optional[str]:
         logger.error(f"Error fetching URL {url}: {str(e)}")
         return None
 
-def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
+def process_court_data(text: str, court_info: Dict, scraper_run_id: Optional[int] = None) -> Optional[Dict]:
     """Process court data using OpenAI to extract structured information"""
     try:
         logger.info(f"Processing court data for {court_info['name']}")
@@ -75,6 +98,9 @@ def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
             model="gpt-4o",
             success=True
         )
+
+        if scraper_run_id:
+            add_scraper_log('INFO', f'Successfully processed {court_info["name"]}', scraper_run_id)
 
         return result
 
@@ -134,7 +160,14 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
 
         # Start scraping status
         if total_courts > 0:
-            scraper_run_id = update_scraper_status(
+            # Initialize scraper run first
+            scraper_run_id = initialize_scraper_run(total_courts)
+            if not scraper_run_id:
+                logger.error("Failed to initialize scraper run")
+                return []
+
+            update_scraper_status(
+                scraper_run_id,
                 0, total_courts, 'running',
                 'Starting court data collection',
                 current_court='Initializing',
@@ -153,6 +186,7 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
                         # Update status
                         next_court = "Completion" if courts_processed == total_courts else f"Next court in queue"
                         update_scraper_status(
+                            scraper_run_id,
                             courts_processed, total_courts, 'running',
                             f'Processing {court["name"]}',
                             current_court=court['name'],
@@ -162,11 +196,14 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
 
                         if not court.get('url'):
                             logger.warning(f"No URL found for {court['name']}")
+                            if scraper_run_id:
+                                add_scraper_log('WARNING', f'No URL found for {court["name"]}', scraper_run_id)
                             continue
 
                         text = get_court_data_from_url(court['url'])
                         if text:
                             update_scraper_status(
+                                scraper_run_id,
                                 courts_processed, total_courts, 'running',
                                 f'Extracting data from {court["name"]}',
                                 current_court=court['name'],
@@ -174,24 +211,26 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
                                 stage='Extracting data'
                             )
 
-                            court_data = process_court_data(text, court)
+                            court_data = process_court_data(text, court, scraper_run_id)
                             if court_data:
                                 court_data['id'] = court['id']
                                 courts_data.append(court_data)
-                                add_scraper_log('INFO', f'Successfully processed {court["name"]}', scraper_run_id)
                             else:
-                                add_scraper_log('ERROR', f'Failed to extract data from {court["name"]}', scraper_run_id)
+                                if scraper_run_id:
+                                    add_scraper_log('ERROR', f'Failed to extract data from {court["name"]}', scraper_run_id)
 
                         time.sleep(1)  # Rate limiting
 
                     except Exception as e:
                         error_message = f'Error processing {court["name"]}: {str(e)}'
                         logger.error(error_message)
-                        add_scraper_log('ERROR', error_message, scraper_run_id)
+                        if scraper_run_id:
+                            add_scraper_log('ERROR', error_message, scraper_run_id)
 
             # Update final status
             completion_message = f'Completed processing {len(courts_data)} courts'
             update_scraper_status(
+                scraper_run_id,
                 courts_processed,
                 total_courts,
                 'completed',
@@ -204,6 +243,16 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
 
     except Exception as e:
         logger.error(f"Error in scrape_courts: {str(e)}")
+        if scraper_run_id:
+            update_scraper_status(
+                scraper_run_id,
+                courts_processed,
+                total_courts,
+                'error',
+                str(e),
+                current_court='Error',
+                stage='Failed'
+            )
         return []
 
 def update_database(courts_data: List[Dict]) -> None:
