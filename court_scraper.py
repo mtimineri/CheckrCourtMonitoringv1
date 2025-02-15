@@ -67,13 +67,21 @@ def process_court_data(text: str, court_info: Dict, scraper_run_id: Optional[int
         - address: full address
         - lat: latitude as float
         - lon: longitude as float
+        - maintenance_notice: any information about upcoming maintenance or planned downtime (null if none found)
+        - maintenance_start: start date of maintenance in YYYY-MM-DD format (null if no date found)
+        - maintenance_end: end date of maintenance in YYYY-MM-DD format (null if no date found)
 
-        Focus on finding the current operational status and location information.
+        Focus on finding:
+        1. Current operational status
+        2. Location information
+        3. Any notices about scheduled maintenance or planned system downtimes
+        4. Specific dates for maintenance windows
+
         Use the provided name and type exactly as given.
         Make educated guesses for missing fields based on context."""
 
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o",  # newest OpenAI model released May 13, 2024
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -102,7 +110,6 @@ def process_court_data(text: str, court_info: Dict, scraper_run_id: Optional[int
             add_scraper_log('INFO', f'Successfully processed {court_info["name"]}', scraper_run_id)
 
         return result
-
     except Exception as e:
         logger.error(f"Error processing court data for {court_info['name']}: {str(e)}")
         # Log failed API usage
@@ -257,6 +264,8 @@ def update_database(courts_data: List[Dict]) -> None:
                 # Handle potential None values for lat/lon
                 lat = court.get('lat')
                 lon = court.get('lon')
+                maintenance_start = court.get('maintenance_start')
+                maintenance_end = court.get('maintenance_end')
 
                 # Convert to float if present, else use None
                 lat_value = float(lat) if lat is not None else None
@@ -268,6 +277,9 @@ def update_database(courts_data: List[Dict]) -> None:
                         lat = %s,
                         lon = %s,
                         address = %s,
+                        maintenance_notice = %s,
+                        maintenance_start = %s,
+                        maintenance_end = %s,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (
@@ -275,6 +287,9 @@ def update_database(courts_data: List[Dict]) -> None:
                     lat_value,
                     lon_value,
                     court.get('address', 'Unknown'),
+                    court.get('maintenance_notice'),
+                    maintenance_start,
+                    maintenance_end,
                     court['id']
                 ))
                 logger.debug(f"Updated court {court['id']}: {court.get('name', 'Unknown')}")

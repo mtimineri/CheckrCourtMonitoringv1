@@ -29,7 +29,10 @@ def initialize_database():
             lon FLOAT NOT NULL,
             address TEXT NOT NULL,
             image_url TEXT NOT NULL,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            maintenance_notice TEXT,
+            maintenance_start TIMESTAMP,
+            maintenance_end TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS scraper_status (
@@ -295,7 +298,8 @@ def get_filtered_court_data(filters=None):
         SELECT 
             c.id, c.name, c.type, c.status, c.address, c.lat, c.lon,
             j.name as jurisdiction_name, j.type as jurisdiction_type,
-            p.name as parent_jurisdiction
+            p.name as parent_jurisdiction,
+            c.maintenance_notice, c.maintenance_start, c.maintenance_end
         FROM courts c
         LEFT JOIN jurisdictions j ON c.jurisdiction_id = j.id
         LEFT JOIN jurisdictions p ON j.parent_id = p.id
@@ -321,6 +325,9 @@ def get_filtered_court_data(filters=None):
             search_term = f"%{filters['search']}%"
             params.extend([search_term, search_term])
 
+        if filters.get('has_maintenance'):
+            query += " AND c.maintenance_notice IS NOT NULL"
+
     query += " ORDER BY c.name"
 
     cur.execute(query, params)
@@ -335,7 +342,8 @@ def get_filtered_court_data(filters=None):
     else:
         return pd.DataFrame(columns=[
             'id', 'name', 'type', 'status', 'address', 'lat', 'lon',
-            'jurisdiction_name', 'jurisdiction_type', 'parent_jurisdiction'
+            'jurisdiction_name', 'jurisdiction_type', 'parent_jurisdiction',
+            'maintenance_notice', 'maintenance_start', 'maintenance_end'
         ])
 
 

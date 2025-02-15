@@ -25,6 +25,7 @@ This page provides comprehensive information about courts across different juris
 - **Filters**: Filter courts by status and type using the sidebar
 - **Map View**: Courts with location data are displayed on the map, colored by their operational status
 - **Download**: Export the filtered data as a CSV file
+- **Maintenance**: View upcoming maintenance and planned downtimes
 
 The data is regularly updated through our court monitoring system.
 """)
@@ -45,6 +46,9 @@ with st.sidebar:
     type_options = ["All"] + get_court_types()
     selected_type = st.selectbox("Court Type", type_options)
 
+    # Maintenance filter
+    show_maintenance = st.checkbox("Show courts with scheduled maintenance", value=False)
+
     # Create filter dict
     filters = {}
     if search:
@@ -53,38 +57,54 @@ with st.sidebar:
         filters['status'] = selected_status
     if selected_type != "All":
         filters['type'] = selected_type
+    if show_maintenance:
+        filters['has_maintenance'] = True
 
 # Get filtered data
 df = get_filtered_court_data(filters)
-
-# Debug: Print unique status values
-if not df.empty:
-    st.sidebar.write("Debug - Available Status Values:", df['status'].unique())
 
 if df.empty:
     st.warning("No courts match the selected filters.")
 else:
     # Display stats
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Courts", len(df))
     with col2:
         st.metric("Court Types", len(df['type'].unique()))
     with col3:
         st.metric("Jurisdictions", len(df['jurisdiction_name'].unique()))
+    with col4:
+        maintenance_count = len(df[df['maintenance_notice'].notna()])
+        st.metric("Courts with Maintenance", maintenance_count)
 
     # Create main display table
+    display_columns = [
+        'name', 'type', 'status', 'jurisdiction_name',
+        'parent_jurisdiction', 'address'
+    ]
+
+    # Add maintenance columns if there are any courts with maintenance
+    if maintenance_count > 0:
+        display_columns.extend(['maintenance_notice', 'maintenance_start', 'maintenance_end'])
+
+    # Format maintenance dates
+    if 'maintenance_start' in df.columns:
+        df['maintenance_start'] = pd.to_datetime(df['maintenance_start']).dt.strftime('%Y-%m-%d')
+    if 'maintenance_end' in df.columns:
+        df['maintenance_end'] = pd.to_datetime(df['maintenance_end']).dt.strftime('%Y-%m-%d')
+
     st.dataframe(
-        df[[
-            'name', 'type', 'status', 'jurisdiction_name',
-            'parent_jurisdiction', 'address'
-        ]].rename(columns={
+        df[display_columns].rename(columns={
             'jurisdiction_name': 'Jurisdiction',
             'parent_jurisdiction': 'Parent Jurisdiction',
             'name': 'Court Name',
             'type': 'Court Type',
             'status': 'Status',
-            'address': 'Address'
+            'address': 'Address',
+            'maintenance_notice': 'Maintenance Notice',
+            'maintenance_start': 'Maintenance Start',
+            'maintenance_end': 'Maintenance End'
         }),
         use_container_width=True,
         hide_index=True
