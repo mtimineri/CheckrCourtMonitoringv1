@@ -16,8 +16,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown("<h1 class='header'>Court Monitoring Platform</h1>", unsafe_allow_html=True)
-st.markdown("### Scraper Status and Court Data")
+st.header("Scraper Status")
 st.markdown("Monitor court data collection progress and view court information")
 
 # Display scraper status
