@@ -19,9 +19,11 @@ def get_db_connection():
 
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
-    conn = get_db_connection()
-    cur = conn.cursor()
+    conn = None
     try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
         cur.execute("""
             SELECT 
                 id, start_time, end_time, total_courts,
@@ -32,24 +34,34 @@ def get_court_type_status(court_type: str):
             ORDER BY start_time DESC
             LIMIT 1
         """, (court_type.lower(),))
+
         status = cur.fetchone()
         if status:
+            # Convert None values to 0 for numeric fields
+            total_courts = status[3] if status[3] is not None else 0
+            courts_processed = status[4] if status[4] is not None else 0
+
             return {
                 'id': status[0],
                 'start_time': status[1],
                 'end_time': status[2],
-                'total_courts': status[3],
-                'courts_processed': status[4],
-                'status': status[5],
-                'message': status[6],
-                'current_court': status[7],
-                'next_court': status[8],
-                'stage': status[9]
+                'total_courts': total_courts,
+                'courts_processed': courts_processed,
+                'status': status[5] if status[5] else 'unknown',
+                'message': status[6] if status[6] else '',
+                'current_court': status[7] if status[7] else 'None',
+                'next_court': status[8] if status[8] else 'None',
+                'stage': status[9] if status[9] else 'Not started'
             }
         return None
+    except Exception as e:
+        st.error(f"Database error in get_court_type_status: {str(e)}")
+        return None
     finally:
-        cur.close()
-        conn.close()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 # Page configuration
 st.set_page_config(
@@ -91,7 +103,7 @@ def display_court_tab(court_type: str, get_courts_func):
 
             # Check if any scraper is running for this court type
             current_status = get_court_type_status(court_type)
-            is_running = current_status and current_status['status'] == 'running'
+            is_running = current_status and current_status.get('status') == 'running'
 
             # Start scraping button
             if st.button(f"Start Scraping {court_type} Courts", disabled=is_running):
@@ -133,43 +145,43 @@ def display_court_tab(court_type: str, get_courts_func):
                     status_container.error(f"Error during scraping: {str(e)}")
 
         # Display court type specific status
-        status = get_court_type_status(court_type)
-        if status:
+        if current_status:
             st.subheader(f"{court_type} Courts Status")
 
-            # Create metrics
+            # Create metrics with safe calculations
             metric_cols = st.columns(3)
             with metric_cols[0]:
-                progress = (status['courts_processed'] / status['total_courts'] * 100 
-                          if status['total_courts'] else 0)
+                # Safely calculate progress
+                total = current_status.get('total_courts', 0)
+                processed = current_status.get('courts_processed', 0)
+                progress = (processed / total * 100) if total > 0 else 0
                 st.metric("Progress", f"{progress:.1f}%")
 
             with metric_cols[1]:
                 st.metric(
                     "Courts Processed",
-                    f"{status['courts_processed']}/{status['total_courts']}"
-                    if status['total_courts'] else "0/0"
+                    f"{processed}/{total}"
                 )
 
             with metric_cols[2]:
-                st.metric("Status", status['status'].title())
+                st.metric("Status", current_status.get('status', 'Unknown').title())
 
             # Status details
             details_col1, details_col2 = st.columns(2)
             with details_col1:
-                st.markdown(f"**Current Court:** {status['current_court'] or 'N/A'}")
-                st.markdown(f"**Next Court:** {status['next_court'] or 'N/A'}")
-                st.markdown(f"**Stage:** {status['stage'] or 'N/A'}")
+                st.markdown(f"**Current Court:** {current_status.get('current_court', 'N/A')}")
+                st.markdown(f"**Next Court:** {current_status.get('next_court', 'N/A')}")
+                st.markdown(f"**Stage:** {current_status.get('stage', 'N/A')}")
 
             with details_col2:
-                st.markdown(f"**Started:** {format_timestamp(status['start_time'])}")
-                st.markdown(f"**Last Updated:** {format_timestamp(status['end_time'])}")
+                st.markdown(f"**Started:** {format_timestamp(current_status.get('start_time'))}")
+                st.markdown(f"**Last Updated:** {format_timestamp(current_status.get('end_time'))}")
 
-            if status['message']:
-                st.info(status['message'])
+            if current_status.get('message'):
+                st.info(current_status['message'])
 
             # Auto-refresh while scraper is running
-            if status['status'] == 'running':
+            if current_status.get('status') == 'running':
                 time.sleep(2)
                 st.rerun()
 
