@@ -4,12 +4,18 @@ from court_data import get_court_data, get_scraper_status, get_scraper_logs
 from court_scraper import scrape_courts, update_database
 import time
 from datetime import datetime, timedelta
+from court_types import federal_courts, state_courts, county_courts
+import psycopg2
+import os
 
 def format_timestamp(ts):
     """Format timestamp for display"""
     if ts is None:
         return "N/A"
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+def get_db_connection():
+    return psycopg2.connect(os.environ['DATABASE_URL'])
 
 # Page configuration
 st.set_page_config(
@@ -19,64 +25,91 @@ st.set_page_config(
 )
 
 st.title("Court Data Scraper Control")
-st.markdown("Control and monitor the court data scraping process")
+st.markdown("Control and monitor the court data scraping process by jurisdiction level")
 
 # Create tabs for different control sections
-tab1, tab2 = st.tabs(["Manual Control", "Schedule Settings"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Federal Courts", 
+    "State Courts", 
+    "County Courts",
+    "Schedule Settings"
+])
+
+def display_court_tab(court_type: str, get_courts_func, scrape_func):
+    """Display controls for a specific court type"""
+    conn = get_db_connection()
+    try:
+        # Get current court data for selection
+        courts = get_courts_func(conn)
+
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            selected_courts = st.multiselect(
+                f"Select specific {court_type} courts to scrape",
+                options=[court['name'] for court in courts] if courts else [],
+                help="Leave empty to scrape all courts"
+            )
+
+            # Convert selected court names to IDs
+            selected_ids = None
+            if selected_courts:
+                selected_ids = [
+                    court['id'] for court in courts 
+                    if court['name'] in selected_courts
+                ]
+
+            # Start scraping button
+            if st.button(f"Start Scraping {court_type} Courts"):
+                status_container = st.empty()
+                progress_container = st.empty()
+                message_container = st.empty()
+
+                try:
+                    with status_container.status(f"Scraping {court_type} court data...") as status:
+                        status.write("Initializing scraper...")
+                        courts_data = scrape_func(conn, selected_ids)
+
+                        if courts_data:
+                            status.update(label="Updating database...", state="running")
+                            update_database(courts_data)
+                            status.update(label="Completed!", state="complete")
+                            st.success(f"Successfully scraped {len(courts_data)} courts!")
+                        else:
+                            status.update(label="No data collected", state="error")
+                            st.warning("No court data was collected")
+
+                except Exception as e:
+                    status_container.error(f"Error during scraping: {str(e)}")
+
+    finally:
+        conn.close()
 
 with tab1:
-    # Get current court data for selection
-    df = get_court_data()
-
-    # Create main control section
-    st.header("Manual Scraping")
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        # Multi-select for courts
-        selected_courts = st.multiselect(
-            "Select specific courts to scrape",
-            options=df['name'].tolist() if not df.empty else [],
-            help="Leave empty to scrape all courts"
-        )
-
-        # Convert selected court names to IDs
-        selected_ids = None
-        if selected_courts:
-            selected_ids = df[df['name'].isin(selected_courts)]['id'].tolist()
-
-        # Start scraping button with status container
-        if st.button("Start Scraping"):
-            status_container = st.empty()
-            progress_container = st.empty()
-            message_container = st.empty()
-
-            try:
-                with status_container.status("Scraping court data...") as status:
-                    status.write("Initializing scraper...")
-                    courts_data = scrape_courts(selected_ids)
-
-                    if courts_data:
-                        status.update(label="Updating database...", state="running")
-                        update_database(courts_data)
-                        status.update(label="Completed!", state="complete")
-                        st.success(f"Successfully scraped {len(courts_data)} courts!")
-                    else:
-                        status.update(label="No data collected", state="error")
-                        st.warning("No court data was collected")
-
-            except Exception as e:
-                status_container.error(f"Error during scraping: {str(e)}")
+    st.header("Federal Courts")
+    display_court_tab("Federal", federal_courts.scrape_federal_courts, scrape_courts)
 
 with tab2:
-    st.header("Scheduled Scraping")
+    st.header("State Courts")
+    display_court_tab("State", state_courts.scrape_state_courts, scrape_courts)
 
-    # Schedule settings
+with tab3:
+    st.header("County Courts")
+    display_court_tab("County", county_courts.scrape_county_courts, scrape_courts)
+
+with tab4:
+    st.header("Scheduled Scraping")
     schedule_enabled = st.toggle("Enable Scheduled Scraping", value=False)
 
     if schedule_enabled:
         col1, col2 = st.columns(2)
         with col1:
+            court_types = st.multiselect(
+                "Select Court Types to Scrape",
+                options=["Federal Courts", "State Courts", "County Courts"],
+                default=["Federal Courts"]
+            )
+
             frequency = st.selectbox(
                 "Scraping Frequency",
                 options=["Every 6 hours", "Every 12 hours", "Daily", "Weekly"],
@@ -89,23 +122,21 @@ with tab2:
                 value=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             )
 
-        # Convert frequency to hours for workflow configuration
-        frequency_hours = {
-            "Every 6 hours": 6,
-            "Every 12 hours": 12,
-            "Daily": 24,
-            "Weekly": 168
-        }[frequency]
-
         if st.button("Save Schedule"):
             try:
                 # Configure the scheduled workflow
                 st.success(f"Scraper scheduled to run {frequency.lower()} starting at {start_time.strftime('%H:%M')}")
 
-                # Set up the recurring workflow
-                command = "python -c 'from court_scraper import scrape_courts, update_database; courts_data = scrape_courts(); update_database(courts_data)'"
+                # Set up the recurring workflow for each selected court type
+                frequency_hours = {
+                    "Every 6 hours": 6,
+                    "Every 12 hours": 12,
+                    "Daily": 24,
+                    "Weekly": 168
+                }[frequency]
 
                 st.code(f"""Schedule configured:
+Court Types: {', '.join(court_types)}
 Frequency: {frequency}
 Start Time: {start_time.strftime('%H:%M')}
 Next Run: {(datetime.now().replace(hour=start_time.hour, minute=start_time.minute) + timedelta(hours=frequency_hours)).strftime('%Y-%m-%d %H:%M')}
@@ -117,8 +148,6 @@ Next Run: {(datetime.now().replace(hour=start_time.hour, minute=start_time.minut
 status = get_scraper_status()
 if status:
     st.header("Current Status")
-
-    # Create status metrics
     metrics_container = st.container()
     with metrics_container:
         col1, col2, col3 = st.columns(3)

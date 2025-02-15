@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict, Optional
 from court_data import update_scraper_status, add_scraper_log, log_api_usage
 from datetime import datetime
+from court_types import federal_courts, state_courts, county_courts
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +51,7 @@ def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
         Make educated guesses for missing fields based on context."""
 
         response = client.chat.completions.create(
-            model="gpt-4o",  # Using the latest model
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -59,7 +60,7 @@ def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
         )
 
         # Calculate tokens used
-        tokens_used = len(text.split()) + len(system_prompt.split()) + len(response.choices[0].message.content.split())
+        tokens_used = len(text.split()) + len(system_prompt.split())
 
         # Extract JSON from the response
         content = response.choices[0].message.content
@@ -89,139 +90,115 @@ def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
         )
         return None
 
-def get_courts_to_scrape(court_ids: List[int] = None) -> List[Dict]:
-    """Get courts to scrape from the inventory"""
+def get_courts_to_scrape(court_type: str, court_ids: Optional[List[int]] = None) -> List[Dict]:
+    """Get courts to scrape based on type"""
+    conn = None
     try:
         import psycopg2
-        logger.info("Connecting to database to fetch courts")
+        logger.info(f"Connecting to database to fetch {court_type} courts")
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = conn.cursor()
 
-        if court_ids:
-            logger.info(f"Fetching specific courts: {court_ids}")
-            cur.execute("""
-                SELECT 
-                    c.id, c.name, c.type, c.url, j.name as jurisdiction
-                FROM courts c
-                JOIN jurisdictions j ON c.jurisdiction_id = j.id
-                WHERE c.id = ANY(%s)
-                ORDER BY c.name
-            """, (court_ids,))
+        if court_type == 'federal':
+            return federal_courts.scrape_federal_courts(conn, court_ids)
+        elif court_type == 'state':
+            return state_courts.scrape_state_courts(conn, court_ids)
+        elif court_type == 'county':
+            return county_courts.scrape_county_courts(conn, court_ids)
         else:
-            logger.info("Fetching all courts")
-            cur.execute("""
-                SELECT 
-                    c.id, c.name, c.type, c.url, j.name as jurisdiction
-                FROM courts c
-                JOIN jurisdictions j ON c.jurisdiction_id = j.id
-                ORDER BY c.name
-            """)
-
-        courts = [
-            {
-                'id': row[0],
-                'name': row[1],
-                'type': row[2],
-                'url': row[3],
-                'jurisdiction': row[4]
-            }
-            for row in cur.fetchall()
-        ]
-
-        logger.info(f"Found {len(courts)} courts to scrape")
-        for court in courts:
-            logger.info(f"Court found: {court['name']} ({court['url']})")
-
-        cur.close()
-        conn.close()
-        return courts
+            logger.error(f"Unknown court type: {court_type}")
+            return []
 
     except Exception as e:
         logger.error(f"Error getting courts to scrape: {str(e)}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
-def scrape_courts(court_ids: List[int] = None) -> List[Dict]:
-    """Scrape court data using the inventory"""
+def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all') -> List[Dict]:
+    """Scrape court data from their websites"""
     try:
-        # Get courts to scrape from inventory
-        courts_to_scrape = get_courts_to_scrape(court_ids)
-
-        if not courts_to_scrape:
-            logger.warning("No courts found to scrape")
-            return []
-
-        total_courts = len(courts_to_scrape)
         courts_data = []
+        scraper_run_id = None
 
-        scraper_run_id = update_scraper_status(
-            0, total_courts, 'running',
-            'Starting court data collection',
-            current_court='Initializing',
-            stage='Starting scraper'
-        )
+        # Determine which court types to scrape
+        court_types = ['federal', 'state', 'county'] if court_type == 'all' else [court_type]
 
-        for i, court in enumerate(courts_to_scrape, 1):
-            try:
-                logger.info(f"Processing court {i}/{total_courts}: {court['name']}")
+        total_courts = 0
+        courts_processed = 0
 
-                # Update status with current and next court
-                next_court = courts_to_scrape[i]['name'] if i < len(courts_to_scrape) else "Completion"
-                update_scraper_status(
-                    i, total_courts, 'running',
-                    f'Processing {court["name"]}',
-                    current_court=court['name'],
-                    next_court=next_court,
-                    stage='Fetching content'
-                )
+        # Get total number of courts to scrape
+        for ct in court_types:
+            courts = get_courts_to_scrape(ct, court_ids)
+            total_courts += len(courts)
 
-                add_scraper_log('INFO', f'Processing {court["name"]}: {court["url"]}', scraper_run_id)
+        # Start scraping status
+        if total_courts > 0:
+            scraper_run_id = update_scraper_status(
+                0, total_courts, 'running',
+                'Starting court data collection',
+                current_court='Initializing',
+                stage='Starting scraper'
+            )
 
-                if not court.get('url'):
-                    logger.warning(f"No URL found for {court['name']}")
-                    continue
+            # Process each court type
+            for ct in court_types:
+                courts = get_courts_to_scrape(ct, court_ids)
 
-                text = get_court_data_from_url(court['url'])
-                if text:
-                    update_scraper_status(
-                        i, total_courts, 'running',
-                        f'Extracting data from {court["name"]}',
-                        current_court=court['name'],
-                        next_court=next_court,
-                        stage='Extracting data'
-                    )
+                for court in courts:
+                    try:
+                        courts_processed += 1
+                        logger.info(f"Processing {court['name']}")
 
-                    court_data = process_court_data(text, court)
-                    if court_data:
-                        court_data['id'] = court['id']  # Add court ID for database update
-                        courts_data.append(court_data)
-                        add_scraper_log('INFO', f'Successfully processed {court["name"]}', scraper_run_id)
-                    else:
-                        add_scraper_log('ERROR', f'Failed to extract data from {court["name"]}', scraper_run_id)
+                        # Update status
+                        next_court = "Completion" if courts_processed == total_courts else f"Next court in queue"
+                        update_scraper_status(
+                            courts_processed, total_courts, 'running',
+                            f'Processing {court["name"]}',
+                            current_court=court['name'],
+                            next_court=next_court,
+                            stage='Fetching content'
+                        )
 
-                time.sleep(1)  # Rate limiting
+                        if not court.get('url'):
+                            logger.warning(f"No URL found for {court['name']}")
+                            continue
 
-            except Exception as e:
-                error_message = f'Error processing {court["name"]}: {str(e)}'
-                logger.error(error_message)
-                add_scraper_log('ERROR', error_message, scraper_run_id)
-                update_scraper_status(
-                    i, total_courts, 'error',
-                    error_message,
-                    current_court=court['name'],
-                    stage='Error'
-                )
+                        text = get_court_data_from_url(court['url'])
+                        if text:
+                            update_scraper_status(
+                                courts_processed, total_courts, 'running',
+                                f'Extracting data from {court["name"]}',
+                                current_court=court['name'],
+                                next_court=next_court,
+                                stage='Extracting data'
+                            )
 
-        completion_message = f'Completed processing {len(courts_data)} courts'
-        logger.info(completion_message)
-        add_scraper_log('INFO', completion_message, scraper_run_id)
-        update_scraper_status(
-            len(courts_data),
-            total_courts,
-            'completed',
-            completion_message,
-            current_court='Complete',
-            stage='Finished'
-        )
+                            court_data = process_court_data(text, court)
+                            if court_data:
+                                court_data['id'] = court['id']
+                                courts_data.append(court_data)
+                                add_scraper_log('INFO', f'Successfully processed {court["name"]}', scraper_run_id)
+                            else:
+                                add_scraper_log('ERROR', f'Failed to extract data from {court["name"]}', scraper_run_id)
+
+                        time.sleep(1)  # Rate limiting
+
+                    except Exception as e:
+                        error_message = f'Error processing {court["name"]}: {str(e)}'
+                        logger.error(error_message)
+                        add_scraper_log('ERROR', error_message, scraper_run_id)
+
+            # Update final status
+            completion_message = f'Completed processing {len(courts_data)} courts'
+            update_scraper_status(
+                courts_processed,
+                total_courts,
+                'completed',
+                completion_message,
+                current_court='Complete',
+                stage='Finished'
+            )
 
         return courts_data
 
