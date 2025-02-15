@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 from court_data import get_filtered_court_data, get_court_types, get_court_statuses
 from datetime import datetime
 
@@ -75,7 +76,42 @@ else:
     courts_with_coords = df.dropna(subset=['lat', 'lon'])
     if not courts_with_coords.empty:
         st.subheader("Court Locations")
-        st.map(courts_with_coords[['lat', 'lon']])
+
+        # Define status colors
+        status_colors = {
+            'Open': '#28a745',  # Green
+            'Closed': '#dc3545',  # Red
+            'Limited Operations': '#ffc107'  # Yellow
+        }
+
+        # Create the map using Plotly
+        fig = px.scatter_mapbox(
+            courts_with_coords,
+            lat='lat',
+            lon='lon',
+            color='status',
+            color_discrete_map=status_colors,
+            hover_data=['name', 'type', 'address'],
+            zoom=3,
+            title="Court Locations by Status"
+        )
+
+        fig.update_layout(
+            mapbox_style="carto-positron",
+            margin={"r":0,"t":30,"l":0,"b":0},
+            height=600,
+            legend_title="Court Status"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Add color legend explanation
+        st.markdown("""
+        **Status Colors:**
+        - 🟢 Open: Normal operations
+        - 🔴 Closed: Not currently operating
+        - 🟡 Limited Operations: Partially operating or restricted services
+        """)
 
     # Download option
     st.download_button(
@@ -94,7 +130,7 @@ This page provides comprehensive information about courts across different juris
 
 - **Search**: Use the search box to find courts by name or address
 - **Filters**: Filter courts by status and type using the sidebar
-- **Map View**: Courts with location data are displayed on the map
+- **Map View**: Courts with location data are displayed on the map, colored by their operational status
 - **Download**: Export the filtered data as a CSV file
 
 The data is regularly updated through our court monitoring system.
