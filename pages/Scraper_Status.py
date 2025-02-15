@@ -68,7 +68,7 @@ if status:
         if status['status'] == 'running':
             st.markdown("*Logs auto-refresh every 5 seconds while scraper is running*")
             time.sleep(5)
-            st.experimental_rerun()
+            st.rerun()
 
 # Display court data table
 st.header("Court Data")
