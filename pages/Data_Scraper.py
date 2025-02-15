@@ -30,13 +30,13 @@ def get_db_connection():
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
     conn = None
+    cur = None
     try:
         conn = get_db_connection()
         if conn is None:
-            logger.error("Database connection failed in get_court_type_status")
             return None
-        cur = conn.cursor()
 
+        cur = conn.cursor()
         cur.execute("""
             SELECT 
                 id, start_time, end_time, total_courts,
@@ -50,16 +50,12 @@ def get_court_type_status(court_type: str):
 
         status = cur.fetchone()
         if status:
-            # Convert None values to 0 for numeric fields
-            total_courts = status[3] if status[3] is not None else 0
-            courts_processed = status[4] if status[4] is not None else 0
-
             return {
                 'id': status[0],
                 'start_time': status[1],
                 'end_time': status[2],
-                'total_courts': total_courts,
-                'courts_processed': courts_processed,
+                'total_courts': status[3] if status[3] is not None else 0,
+                'courts_processed': status[4] if status[4] is not None else 0,
                 'status': status[5] if status[5] else 'unknown',
                 'message': status[6] if status[6] else '',
                 'current_court': status[7] if status[7] else 'None',
@@ -68,8 +64,7 @@ def get_court_type_status(court_type: str):
             }
         return None
     except Exception as e:
-        logger.error(f"Database error in get_court_type_status: {str(e)}")
-        st.error(f"Database error in get_court_type_status: {str(e)}")
+        logger.error(f"Error in get_court_type_status: {str(e)}")
         return None
     finally:
         if cur:
@@ -79,26 +74,31 @@ def get_court_type_status(court_type: str):
 
 def display_court_tab(court_type: str, get_courts_func):
     """Display controls for a specific court type"""
-    conn = None
     try:
+        # Get current court data for selection
         conn = get_db_connection()
         if conn is None:
-            st.error("Unable to connect to database. Please try again later.")
+            st.error("Unable to connect to database")
             return
 
-        # Get current court data for selection
         try:
-            courts = get_courts_func(conn) or []
+            courts = get_courts_func(conn)
+            if courts is None:
+                courts = []
         except Exception as e:
-            logger.error(f"Error getting courts data: {str(e)}")
+            logger.error(f"Error getting courts: {str(e)}")
             courts = []
+        finally:
+            conn.close()
 
         col1, col2 = st.columns([2, 1])
 
         with col1:
+            # Only show multiselect if we have courts
+            court_names = [court['name'] for court in courts] if courts else []
             selected_courts = st.multiselect(
                 f"Select specific {court_type} courts to scrape",
-                options=[court['name'] for court in courts] if courts else [],
+                options=court_names,
                 help="Leave empty to scrape all courts"
             )
 
@@ -110,74 +110,64 @@ def display_court_tab(court_type: str, get_courts_func):
                     if court['name'] in selected_courts
                 ]
 
-            # Check if any scraper is running for this court type
+            # Check if scraper is running
             try:
-                current_status = get_court_type_status(court_type)
-                is_running = current_status and current_status.get('status') == 'running'
+                status = get_court_type_status(court_type)
+                is_running = status and status.get('status') == 'running'
             except Exception as e:
-                logger.error(f"Error getting court status: {str(e)}")
-                current_status = None
+                logger.error(f"Error checking scraper status: {str(e)}")
                 is_running = False
 
             # Start scraping button
             if st.button(f"Start Scraping {court_type} Courts", disabled=is_running):
-                status_container = st.empty()
-                progress_container = st.empty()
-                message_container = st.empty()
-
-                try:
-                    with status_container.status(f"Scraping {court_type} court data...") as status:
-                        # Initialize scraper run with proper total courts count
-                        total_courts = len(selected_courts) if selected_courts else (len(courts) if courts else 0)
+                with st.status(f"Scraping {court_type} court data...") as status:
+                    try:
+                        # Initialize scraper run
+                        total_courts = len(selected_courts) if selected_courts else len(courts)
 
                         if total_courts > 0:
                             run_id = initialize_scraper_run(total_courts)
-                            if run_id is None:
-                                status.update(label="Failed to initialize scraper", state="error")
-                                st.error("Failed to initialize the scraper. Please try again.")
-                                return
+                            if run_id is not None:
+                                status.write(f"Starting scraper for {court_type} courts...")
+                                courts_data = scrape_courts(
+                                    court_ids=selected_ids,
+                                    court_type=court_type.lower()
+                                )
 
-                            status.write(f"Starting scraper for {court_type} courts...")
-                            courts_data = scrape_courts(
-                                court_ids=selected_ids,
-                                court_type=court_type.lower()
-                            )
-
-                            if courts_data:
-                                status.update(label="Updating database...", state="running")
-                                update_database(courts_data)
-                                status.update(label="Completed!", state="complete")
-                                st.success(f"Successfully scraped {len(courts_data)} courts!")
+                                if courts_data:
+                                    status.update(label="Updating database...", state="running")
+                                    update_database(courts_data)
+                                    status.update(label="Completed!", state="complete")
+                                    st.success(f"Successfully scraped {len(courts_data)} courts!")
+                                else:
+                                    status.update(label="No data collected", state="error")
+                                    st.warning("No court data was collected")
                             else:
-                                status.update(label="No data collected", state="error")
-                                st.warning("No court data was collected")
+                                status.update(label="Failed to initialize scraper", state="error")
+                                st.error("Failed to initialize scraper")
                         else:
                             status.update(label="No courts to scrape", state="error")
                             st.warning("No courts available to scrape")
+                    except Exception as e:
+                        logger.error(f"Error during scraping: {str(e)}")
+                        status.update(label=f"Error: {str(e)}", state="error")
 
-                except Exception as e:
-                    status_container.error(f"Error during scraping: {str(e)}")
-
-        # Display court type specific status
+        # Display current status if available
+        current_status = get_court_type_status(court_type)
         if current_status:
             st.subheader(f"{court_type} Courts Status")
 
-            # Create metrics with safe calculations
-            metric_cols = st.columns(3)
-            with metric_cols[0]:
-                # Safely calculate progress
+            cols = st.columns(3)
+            with cols[0]:
                 total = current_status.get('total_courts', 0)
                 processed = current_status.get('courts_processed', 0)
                 progress = (processed / total * 100) if total > 0 else 0
                 st.metric("Progress", f"{progress:.1f}%")
 
-            with metric_cols[1]:
-                st.metric(
-                    "Courts Processed",
-                    f"{processed}/{total}"
-                )
+            with cols[1]:
+                st.metric("Courts Processed", f"{processed}/{total}")
 
-            with metric_cols[2]:
+            with cols[2]:
                 st.metric("Status", current_status.get('status', 'Unknown').title())
 
             # Status details
@@ -201,10 +191,7 @@ def display_court_tab(court_type: str, get_courts_func):
 
     except Exception as e:
         logger.error(f"Error in display_court_tab: {str(e)}")
-        st.error(f"Error accessing court data: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
+        st.error(f"Error: {str(e)}")
 
 # Page configuration
 st.set_page_config(
@@ -216,7 +203,7 @@ st.set_page_config(
 st.title("Court Data Scraper Control")
 st.markdown("Control and monitor the court data scraping process by jurisdiction level")
 
-# Create tabs for different control sections
+# Create tabs for different sections
 tab1, tab2, tab3, tab4 = st.tabs(["Federal Courts", "State Courts", "County Courts", "Schedule Settings"])
 
 with tab1:
@@ -278,7 +265,7 @@ Next Run: {(datetime.now().replace(hour=start_time.hour, minute=start_time.minut
             except Exception as e:
                 st.error(f"Error setting up schedule: {str(e)}")
 
-# Display scraper logs in expandable section
+# Display scraper logs
 with st.expander("Scraper Logs", expanded=True):
     logs = get_scraper_logs()
     if logs:
