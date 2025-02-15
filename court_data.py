@@ -22,21 +22,18 @@ def init_connection_pool():
     """Initialize the database connection pool"""
     global connection_pool
     try:
-        # Parse DATABASE_URL to extract host
+        # Parse DATABASE_URL
         url = urlparse(os.environ['DATABASE_URL'])
 
-        # Create connection pool with explicit IPv4 settings
+        # Create connection pool with minimal configuration
         connection_pool = pool.SimpleConnectionPool(
             min_connections,
             max_connections,
-            host=url.hostname,
-            port=url.port or 5432,
             user=url.username,
             password=url.password,
+            host=url.hostname,
+            port=url.port or 5432,
             database=url.path[1:],  # Remove leading slash
-            # Force IPv4
-            hostaddr=None,  # Let DNS resolve to IPv4
-            options='-c listen_addresses=*'
         )
         logger.info("Database connection pool initialized successfully")
     except Exception as e:
@@ -47,16 +44,30 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
     """Get a database connection with retry logic"""
     global connection_pool
 
+    # Initialize pool if it doesn't exist
     if connection_pool is None:
         init_connection_pool()
         if connection_pool is None:
+            logger.error("Failed to initialize connection pool")
             return None
 
+    # Try to get a connection
     for attempt in range(max_retries):
         try:
             conn = connection_pool.getconn()
-            if conn:
+            if conn and not conn.closed:
+                # Test the connection
+                cur = conn.cursor()
+                cur.execute('SELECT 1')
+                cur.close()
                 return conn
+            else:
+                # Return bad connection to pool and retry
+                if conn:
+                    try:
+                        connection_pool.putconn(conn)
+                    except:
+                        pass
         except Exception as e:
             logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
@@ -69,8 +80,15 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
 
 def return_db_connection(conn):
     """Return a connection to the pool"""
-    if connection_pool and conn:
-        connection_pool.putconn(conn)
+    if connection_pool and conn and not conn.closed:
+        try:
+            connection_pool.putconn(conn)
+        except Exception as e:
+            logger.error(f"Error returning connection to pool: {str(e)}")
+            try:
+                conn.close()
+            except:
+                pass
 
 def initialize_database():
     """Create the courts table and scraper status table"""
