@@ -1,12 +1,10 @@
 import streamlit as st
 import pandas as pd
-from court_data import get_court_data, get_scraper_status, get_scraper_logs
+from court_data import get_court_data, get_scraper_status, get_scraper_logs, update_scraper_status
 from court_scraper import scrape_courts, update_database, initialize_scraper_run
 import time
 from datetime import datetime, timedelta
 from court_types import federal_courts, state_courts, county_courts
-import psycopg2
-import os
 import logging
 
 # Set up logging
@@ -19,25 +17,9 @@ def format_timestamp(ts):
         return "N/A"
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-def get_db_connection():
-    """Get database connection with error handling"""
-    try:
-        return psycopg2.connect(os.environ['DATABASE_URL'])
-    except Exception as e:
-        logger.error(f"Database connection error: {str(e)}")
-        return None
-
-def return_db_connection(conn):
-    try:
-        if conn:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error closing database connection: {str(e)}")
-
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
     conn = None
-    cur = None
     try:
         conn = get_db_connection()
         if conn is None:
@@ -79,6 +61,7 @@ def get_court_type_status(court_type: str):
         if conn:
             conn.close()
 
+# Function to display court tab content
 def display_court_tab(court_type: str, get_courts_func):
     """Display controls for a specific court type with improved error handling"""
     try:
@@ -99,7 +82,7 @@ def display_court_tab(court_type: str, get_courts_func):
             st.error(f"Error retrieving {court_type} courts data: {str(e)}")
         finally:
             if conn:
-                return_db_connection(conn)
+                conn.close()
 
         col1, col2 = st.columns([2, 1])
 
@@ -174,8 +157,8 @@ def display_court_tab(court_type: str, get_courts_func):
 
             cols = st.columns(3)
             with cols[0]:
-                total = current_status.get('total_courts', 0) or 0  # Handle None case
-                processed = current_status.get('courts_processed', 0) or 0  # Handle None case
+                total = current_status.get('total_courts', 0) or 0
+                processed = current_status.get('courts_processed', 0) or 0
                 progress = (processed / total * 100) if total > 0 else 0
                 st.metric("Progress", f"{progress:.1f}%")
 
@@ -210,7 +193,7 @@ def display_court_tab(court_type: str, get_courts_func):
 
 # Page configuration
 st.set_page_config(
-    page_title="Scraper Control | Court Monitoring Platform",
+    page_title="Court Data Scraper | Court Monitoring Platform",
     page_icon="⚖️",
     layout="wide"
 )
@@ -233,6 +216,7 @@ with tab3:
     st.header("County Courts")
     display_court_tab("County", county_courts.get_county_courts)
 
+# Schedule Settings Tab
 with tab4:
     st.header("Scheduled Scraping")
     schedule_enabled = st.toggle("Enable Scheduled Scraping", value=False)
@@ -293,3 +277,21 @@ with st.expander("Scraper Logs", expanded=True):
         st.text_area("Latest Logs", log_text, height=300)
     else:
         st.info("No logs available")
+
+def get_db_connection():
+    """Get database connection with error handling"""
+    try:
+        return psycopg2.connect(os.environ['DATABASE_URL'])
+    except Exception as e:
+        logger.error(f"Database connection error: {str(e)}")
+        return None
+
+def return_db_connection(conn):
+    try:
+        if conn:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error closing database connection: {str(e)}")
+
+import os
+import psycopg2

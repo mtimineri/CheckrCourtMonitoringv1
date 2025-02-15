@@ -3,8 +3,13 @@ import pandas as pd
 from court_data import get_db_connection
 from datetime import datetime
 import time
-from court_inventory import update_court_inventory
+from court_inventory import update_court_inventory, update_scraper_status
 from court_types import federal_courts, state_courts, county_courts
+
+import logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 
 def format_timestamp(ts):
     """Format timestamp for display"""
@@ -15,72 +20,61 @@ def format_timestamp(ts):
 def get_inventory_status():
     """Get the latest inventory update status"""
     conn = get_db_connection()
-    cur = conn.cursor()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return None
 
+    cur = conn.cursor()
     try:
         cur.execute("""
             SELECT 
-                id, started_at, completed_at, total_sources,
-                sources_processed, new_courts_found, courts_updated,
-                status, message, current_court, next_court, stage
+                id, start_time, end_time, total_sources,
+                sources_processed, status, message,
+                current_source, next_source, stage
             FROM inventory_updates
-            ORDER BY started_at DESC
+            ORDER BY start_time DESC
             LIMIT 1
         """)
         status = cur.fetchone()
-        return status
+        if status:
+            return {
+                'id': status[0],
+                'start_time': status[1],
+                'end_time': status[2],
+                'total_sources': status[3],
+                'sources_processed': status[4],
+                'status': status[5],
+                'message': status[6],
+                'current_source': status[7],
+                'next_source': status[8],
+                'stage': status[9]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error getting inventory status: {str(e)}")
+        return None
     finally:
-        cur.close()
-        conn.close()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
-def get_court_sources():
-    """Get all court sources with their status"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-
+def return_db_connection(conn):
     try:
-        cur.execute("""
-            WITH source_stats AS (
-                SELECT 
-                    cs.id,
-                    COUNT(c.id) as court_count,
-                    MAX(c.last_updated) as latest_update
-                FROM court_sources cs
-                LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
-                GROUP BY cs.id
-            )
-            SELECT 
-                cs.id,
-                j.name as jurisdiction,
-                j.type as jurisdiction_type,
-                cs.source_url,
-                cs.last_checked,
-                cs.last_updated,
-                cs.is_active,
-                EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
-                ss.court_count,
-                ss.latest_update,
-                j.parent_id
-            FROM court_sources cs
-            JOIN jurisdictions j ON cs.jurisdiction_id = j.id
-            LEFT JOIN source_stats ss ON ss.id = cs.id
-            ORDER BY j.type, j.name, cs.source_url
-        """)
-        sources = cur.fetchall()
-        return sources
-    finally:
-        cur.close()
-        conn.close()
+        if conn:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error closing database connection: {str(e)}")
 
 # Page configuration
 st.set_page_config(
-    page_title="Court Sources | Court Monitoring Platform",
+    page_title="Court Location Scraper | Court Monitoring Platform",
     page_icon="⚖️",
     layout="wide"
 )
 
-st.title("Court Directory Sources")
-st.markdown("Monitor and manage court directory sources")
+st.title("Court Location Scraper")
+st.markdown("Monitor and update the court location inventory")
 
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])
@@ -93,10 +87,13 @@ with col1:
 
     if st.button("Update Court Inventory Now", key="update_inventory_button"):
         try:
-            with st.spinner("Updating court inventory..."):
+            with st.status("Updating court inventory...") as status:
                 court_type = update_type.lower().split()[0]
                 result = update_court_inventory(court_type=court_type)
-                st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
+                if result.get('status') != 'error':
+                    st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
+                else:
+                    st.error(f"Error updating inventory: {result.get('message')}")
         except Exception as e:
             st.error(f"Error updating inventory: {str(e)}")
 
@@ -107,37 +104,36 @@ if status:
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        progress = (status[4] / status[3] * 100 if status[3] else 0)
+        total = status.get('total_sources', 0) or 0
+        processed = status.get('sources_processed', 0) or 0
+        progress = (processed / total * 100) if total > 0 else 0
         st.metric("Update Progress", f"{progress:.1f}%")
 
     with col2:
-        st.metric("New Courts Found", status[5] or 0)
+        st.metric("Sources Processed", f"{processed}/{total}")
 
     with col3:
-        st.metric("Courts Updated", status[6] or 0)
+        st.metric("Status", status.get('status', 'Unknown').title())
 
     # Status details
     st.subheader("Latest Update Status")
     status_cols = st.columns(2)
 
     with status_cols[0]:
-        st.markdown(f"**Status:** {status[7].title()}")
-        st.markdown(f"**Started:** {format_timestamp(status[1])}")
-        st.markdown(f"**Completed:** {format_timestamp(status[2])}")
+        st.markdown(f"**Status:** {status.get('status', 'Unknown').title()}")
+        st.markdown(f"**Started:** {format_timestamp(status.get('start_time'))}")
+        st.markdown(f"**Completed:** {format_timestamp(status.get('end_time'))}")
 
     with status_cols[1]:
-        st.markdown(f"**Sources:** {status[4]}/{status[3]}")
-        if status[9]:  # current_court
-            st.markdown(f"**Current Court:** {status[9]}")
-        if status[10]:  # next_court
-            st.markdown(f"**Next Court:** {status[10]}")
-        if status[11]:  # stage
-            st.markdown(f"**Stage:** {status[11]}")
-        if status[8]:  # message
-            st.info(status[8])
+        st.markdown(f"**Current Source:** {status.get('current_source', 'None')}")
+        st.markdown(f"**Next Source:** {status.get('next_source', 'None')}")
+        st.markdown(f"**Stage:** {status.get('stage', 'Not started')}")
+
+        if status.get('message'):
+            st.info(status.get('message'))
 
     # Auto-refresh while update is running
-    if status[7] == 'running':
+    if status.get('status') == 'running':
         time.sleep(2)
         st.rerun()
 
@@ -228,3 +224,48 @@ The update process will:
 3. Add new courts to the database
 4. Update information for existing courts
 """)
+
+def get_court_sources():
+    """Get all court sources with their status"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return []
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            WITH source_stats AS (
+                SELECT 
+                    cs.id,
+                    COUNT(c.id) as court_count,
+                    MAX(c.last_updated) as latest_update
+                FROM court_sources cs
+                LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
+                GROUP BY cs.id
+            )
+            SELECT 
+                cs.id,
+                j.name as jurisdiction,
+                j.type as jurisdiction_type,
+                cs.source_url,
+                cs.last_checked,
+                cs.last_updated,
+                cs.is_active,
+                EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
+                ss.court_count,
+                ss.latest_update,
+                j.parent_id
+            FROM court_sources cs
+            JOIN jurisdictions j ON cs.jurisdiction_id = j.id
+            LEFT JOIN source_stats ss ON ss.id = cs.id
+            ORDER BY j.type, j.name, cs.source_url
+        """)
+        sources = cur.fetchall()
+        return sources
+    except Exception as e:
+        logger.error(f"Error getting court sources: {str(e)}")
+        return []
+    finally:
+        return_db_connection(cur)
+        return_db_connection(conn)
