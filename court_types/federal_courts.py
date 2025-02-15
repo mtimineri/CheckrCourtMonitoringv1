@@ -8,6 +8,63 @@ from psycopg2.extras import execute_values
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_federal_courts(conn) -> List[Dict]:
+    """Get list of federal courts"""
+    logger.info("Getting federal courts list...")
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT c.id, c.name, c.type, c.status, c.url
+            FROM courts c
+            JOIN jurisdictions j ON c.jurisdiction_id = j.id
+            WHERE j.type = 'federal'
+            ORDER BY c.name
+        """)
+
+        courts = [
+            {
+                'id': row[0],
+                'name': row[1],
+                'type': row[2],
+                'status': row[3],
+                'url': row[4]
+            }
+            for row in cur.fetchall()
+        ]
+
+        return courts
+    finally:
+        cur.close()
+
+def scrape_federal_courts(conn, court_ids: Optional[List[int]] = None) -> List[Dict]:
+    """Scrape federal court data"""
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT c.id, c.name, c.type, cs.source_url
+            FROM courts c
+            JOIN jurisdictions j ON c.jurisdiction_id = j.id
+            JOIN court_sources cs ON cs.jurisdiction_id = j.id
+            WHERE j.type = 'federal'
+            AND cs.is_active = true
+            AND (%s IS NULL OR c.id = ANY(%s))
+            ORDER BY c.name
+        """, (court_ids, court_ids))
+
+        courts = [
+            {
+                'id': row[0],
+                'name': row[1],
+                'type': row[2],
+                'url': row[3]
+            }
+            for row in cur.fetchall()
+        ]
+
+        return courts
+    finally:
+        cur.close()
+
 def initialize_federal_courts(conn) -> None:
     """Initialize federal court records"""
     logger.info("Initializing federal courts...")
@@ -104,35 +161,5 @@ def initialize_federal_courts(conn) -> None:
         logger.error(f"Error initializing federal courts: {str(e)}")
         conn.rollback()
         raise
-    finally:
-        cur.close()
-
-def scrape_federal_courts(conn, court_ids: Optional[List[int]] = None) -> List[Dict]:
-    """Scrape federal court data"""
-    cur = conn.cursor()
-    try:
-        # Get federal jurisdiction ID
-        cur.execute("""
-            SELECT c.id, c.name, c.type, cs.source_url
-            FROM courts c
-            JOIN jurisdictions j ON c.jurisdiction_id = j.id
-            JOIN court_sources cs ON cs.jurisdiction_id = j.id
-            WHERE j.type = 'federal'
-            AND cs.is_active = true
-            AND (%s IS NULL OR c.id = ANY(%s))
-            ORDER BY c.name
-        """, (court_ids, court_ids))
-        
-        courts = [
-            {
-                'id': row[0],
-                'name': row[1],
-                'type': row[2],
-                'url': row[3]
-            }
-            for row in cur.fetchall()
-        ]
-        
-        return courts
     finally:
         cur.close()

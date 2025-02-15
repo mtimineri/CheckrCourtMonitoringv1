@@ -8,6 +8,34 @@ from psycopg2.extras import execute_values
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_county_courts(conn) -> List[Dict]:
+    """Get list of county courts"""
+    logger.info("Getting county courts list...")
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT c.id, c.name, c.type, c.status, c.url
+            FROM courts c
+            JOIN jurisdictions j ON c.jurisdiction_id = j.id
+            WHERE j.type = 'county'
+            ORDER BY c.name
+        """)
+
+        courts = [
+            {
+                'id': row[0],
+                'name': row[1],
+                'type': row[2],
+                'status': row[3],
+                'url': row[4]
+            }
+            for row in cur.fetchall()
+        ]
+
+        return courts
+    finally:
+        cur.close()
+
 def initialize_county_courts(conn) -> None:
     """Initialize county court records"""
     logger.info("Initializing county courts...")
@@ -74,7 +102,7 @@ def scrape_county_courts(conn, court_ids: Optional[List[int]] = None) -> List[Di
             AND (%s IS NULL OR c.id = ANY(%s))
             ORDER BY c.name
         """, (court_ids, court_ids))
-        
+
         courts = [
             {
                 'id': row[0],
@@ -84,7 +112,7 @@ def scrape_county_courts(conn, court_ids: Optional[List[int]] = None) -> List[Di
             }
             for row in cur.fetchall()
         ]
-        
+
         return courts
     finally:
         cur.close()
