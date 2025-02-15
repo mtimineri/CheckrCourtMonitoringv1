@@ -5,7 +5,7 @@ from openai import OpenAI
 import os
 import time
 from typing import List, Dict
-from court_data import update_scraper_status, add_scraper_log
+from court_data import update_scraper_status, add_scraper_log, log_api_usage # Added import for log_api_usage
 
 def get_court_data_from_url(url: str) -> str:
     """Fetch and extract text content from a URL"""
@@ -35,24 +35,55 @@ def process_court_data(text: str) -> Dict:
             ]
         )
 
+        # Calculate tokens used (approximate based on response)
+        tokens_used = len(text.split()) + len(system_prompt.split()) + len(response.choices[0].message.content.split())
+
         # Extract JSON from the response
         content = response.choices[0].message.content
-        # Handle both cases where the response might be JSON string or containing JSON
         try:
             if content.strip().startswith('{'):
-                return json.loads(content)
+                result = json.loads(content)
             else:
                 # Find JSON-like structure in the text
                 start = content.find('{')
                 end = content.rfind('}') + 1
                 if start >= 0 and end > start:
-                    return json.loads(content[start:end])
-                raise ValueError("No valid JSON found in response")
+                    result = json.loads(content[start:end])
+                else:
+                    raise ValueError("No valid JSON found in response")
+
+            # Log successful API usage
+            log_api_usage(
+                endpoint="chat.completions",
+                tokens_used=tokens_used,
+                model="gpt-4",
+                success=True
+            )
+
+            return result
+
         except json.JSONDecodeError as e:
+            # Log failed API usage
+            log_api_usage(
+                endpoint="chat.completions",
+                tokens_used=tokens_used,
+                model="gpt-4",
+                success=False,
+                error_message=f"JSON decode error: {str(e)}"
+            )
             print(f"Error parsing JSON response: {e}")
             print(f"Response content: {content}")
             return None
+
     except Exception as e:
+        # Log failed API usage
+        log_api_usage(
+            endpoint="chat.completions",
+            tokens_used=0,  # We don't know tokens used in case of error
+            model="gpt-4",
+            success=False,
+            error_message=str(e)
+        )
         print(f"Error processing court data: {e}")
         return None
 

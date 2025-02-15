@@ -44,6 +44,16 @@ def initialize_database():
             message TEXT NOT NULL,
             scraper_run_id INTEGER REFERENCES scraper_status(id)
         );
+
+        CREATE TABLE IF NOT EXISTS api_usage (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            endpoint VARCHAR(50) NOT NULL,
+            tokens_used INTEGER NOT NULL,
+            model VARCHAR(50) NOT NULL,
+            success BOOLEAN NOT NULL,
+            error_message TEXT
+        );
     """)
 
     conn.commit()
@@ -190,6 +200,67 @@ def get_court_statuses():
     conn.close()
 
     return statuses or ['Open', 'Closed', 'Limited Operations']
+
+def log_api_usage(endpoint: str, tokens_used: int, model: str, success: bool, error_message: str = None):
+    """Log OpenAI API usage"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO api_usage (endpoint, tokens_used, model, success, error_message)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (endpoint, tokens_used, model, success, error_message))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def get_api_usage_stats():
+    """Get API usage statistics"""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Get overall statistics
+    cur.execute("""
+        SELECT 
+            COUNT(*) as total_calls,
+            SUM(tokens_used) as total_tokens,
+            COUNT(*) FILTER (WHERE success = true) as successful_calls,
+            COUNT(*) FILTER (WHERE success = false) as failed_calls,
+            MAX(timestamp) as last_call_time
+        FROM api_usage
+    """)
+    overall_stats = cur.fetchone()
+
+    # Get usage by model
+    cur.execute("""
+        SELECT 
+            model,
+            COUNT(*) as calls,
+            SUM(tokens_used) as tokens
+        FROM api_usage
+        GROUP BY model
+        ORDER BY calls DESC
+    """)
+    model_stats = cur.fetchall()
+
+    # Get recent calls
+    cur.execute("""
+        SELECT *
+        FROM api_usage
+        ORDER BY timestamp DESC
+        LIMIT 50
+    """)
+    recent_calls = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return {
+        'overall': overall_stats,
+        'by_model': model_stats,
+        'recent': recent_calls
+    }
 
 # Initialize the database when the module is imported
 initialize_database()
