@@ -36,7 +36,7 @@ with tab1:
         # Multi-select for courts
         selected_courts = st.multiselect(
             "Select specific courts to scrape",
-            options=df['name'].tolist(),
+            options=df['name'].tolist() if not df.empty else [],
             help="Leave empty to scrape all courts"
         )
 
@@ -45,18 +45,28 @@ with tab1:
         if selected_courts:
             selected_ids = df[df['name'].isin(selected_courts)]['id'].tolist()
 
-        # Start scraping button
+        # Start scraping button with status container
         if st.button("Start Scraping"):
+            status_container = st.empty()
+            progress_container = st.empty()
+            message_container = st.empty()
+
             try:
-                with st.spinner("Scraping court data..."):
+                with status_container.status("Scraping court data...") as status:
+                    status.write("Initializing scraper...")
                     courts_data = scrape_courts(selected_ids)
+
                     if courts_data:
+                        status.update(label="Updating database...", state="running")
                         update_database(courts_data)
+                        status.update(label="Completed!", state="complete")
                         st.success(f"Successfully scraped {len(courts_data)} courts!")
                     else:
+                        status.update(label="No data collected", state="error")
                         st.warning("No court data was collected")
+
             except Exception as e:
-                st.error(f"Error during scraping: {str(e)}")
+                status_container.error(f"Error during scraping: {str(e)}")
 
 with tab2:
     st.header("Scheduled Scraping")
@@ -93,7 +103,7 @@ with tab2:
                 st.success(f"Scraper scheduled to run {frequency.lower()} starting at {start_time.strftime('%H:%M')}")
 
                 # Set up the recurring workflow
-                command = f"python -c 'from court_scraper import scrape_courts, update_database; courts_data = scrape_courts(); update_database(courts_data)'"
+                command = "python -c 'from court_scraper import scrape_courts, update_database; courts_data = scrape_courts(); update_database(courts_data)'"
 
                 st.code(f"""Schedule configured:
 Frequency: {frequency}
@@ -108,30 +118,32 @@ status = get_scraper_status()
 if status:
     st.header("Current Status")
 
-    # Create metrics
-    col1, col2, col3 = st.columns(3)
+    # Create status metrics
+    metrics_container = st.container()
+    with metrics_container:
+        col1, col2, col3 = st.columns(3)
 
-    with col1:
-        progress = (status['courts_processed'] / status['total_courts'] * 100 
-                   if status['total_courts'] else 0)
-        st.metric("Progress", f"{progress:.1f}%")
+        with col1:
+            progress = (status['courts_processed'] / status['total_courts'] * 100 
+                       if status['total_courts'] else 0)
+            st.metric("Progress", f"{progress:.1f}%")
 
-    with col2:
-        st.metric("Courts Processed", 
-                 f"{status['courts_processed']}/{status['total_courts']}"
-                 if status['total_courts'] else "0/0")
+        with col2:
+            st.metric("Courts Processed", 
+                     f"{status['courts_processed']}/{status['total_courts']}"
+                     if status['total_courts'] else "0/0")
 
-    with col3:
-        st.metric("Status", status['status'].title())
+        with col3:
+            st.metric("Status", status['status'].title())
 
     # Show current operation details
     st.subheader("Operation Details")
     details_col1, details_col2 = st.columns(2)
 
     with details_col1:
-        st.markdown(f"**Current Court:** {status['current_court']}")
-        st.markdown(f"**Next Court:** {status['next_court']}")
-        st.markdown(f"**Stage:** {status['stage']}")
+        st.markdown(f"**Current Court:** {status['current_court'] or 'N/A'}")
+        st.markdown(f"**Next Court:** {status['next_court'] or 'N/A'}")
+        st.markdown(f"**Stage:** {status['stage'] or 'N/A'}")
 
     with details_col2:
         st.markdown(f"**Started:** {format_timestamp(status['start_time'])}")
@@ -158,30 +170,3 @@ with st.expander("Scraper Logs", expanded=True):
         st.text_area("Latest Logs", log_text, height=300)
     else:
         st.info("No logs available")
-
-# Add explanatory text
-st.markdown("""
-### About the Court Data Scraper
-
-The court data scraper collects information about court operations and status:
-
-1. **Full Scrape**
-   - Leave the court selection empty to scrape all courts in the inventory
-   - This will take longer but provides a complete update
-
-2. **Selective Scrape**
-   - Select specific courts to update only their information
-   - Useful for checking specific courts of interest
-   - Faster than a full scrape
-
-3. **Data Collection**
-   - The scraper visits each court's website
-   - Extracts current operational status
-   - Updates location and contact information
-   - Records any changes in the database
-
-4. **Monitoring**
-   - View real-time progress above
-   - Check the logs for detailed information
-   - Status updates automatically while scraper is running
-""")
