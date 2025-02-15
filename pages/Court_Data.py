@@ -43,6 +43,10 @@ with st.sidebar:
 # Get filtered data
 df = get_filtered_court_data(filters)
 
+# Debug: Print unique status values
+if not df.empty:
+    st.sidebar.write("Debug - Available Status Values:", df['status'].unique())
+
 if df.empty:
     st.warning("No courts match the selected filters.")
 else:
