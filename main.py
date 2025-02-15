@@ -10,8 +10,17 @@ from pages.dashboard import render_dashboard
 st.set_page_config(
     page_title="Court Monitoring Platform",
     page_icon="⚖️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# Hide default menu
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
 
 # Load custom CSS
 with open('styles.css') as f:
