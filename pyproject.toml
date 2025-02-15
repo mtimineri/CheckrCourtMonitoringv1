@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.45.2",
+    "beautifulsoup4>=4.13.3",
     "openai>=1.63.0",
     "pandas>=2.2.3",
     "plotly>=6.0.0",

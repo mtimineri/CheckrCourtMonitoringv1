@@ -7,6 +7,8 @@ import os
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
+import re
+from bs4 import BeautifulSoup
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -392,23 +394,89 @@ def initialize_court_sources() -> None:
 def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
     """Extract court information from page content"""
     try:
-        # Parse the content to find court information
-        # This is a basic implementation that should be enhanced based on actual page structures
         courts = []
-        # Add some sample data for testing
-        courts.append({
-            'name': 'U.S. Supreme Court',
-            'type': 'Supreme Court',
-            'url': 'https://www.supremecourt.gov',
-            'status': 'Open'
-        })
-        courts.append({
-            'name': 'U.S. Court of Appeals for the First Circuit',
-            'type': 'Courts of Appeals',
-            'url': 'http://www.ca1.uscourts.gov',
-            'status': 'Open'
-        })
+
+        # Extract structured content using trafilatura
+        structured_content = trafilatura.extract(
+            content,
+            output_format='json',
+            include_links=True,
+            include_tables=True,
+            include_formatting=True
+        )
+
+        if not structured_content:
+            logger.warning(f"No structured content extracted from {base_url}")
+            return []
+
+        content_json = json.loads(structured_content)
+
+        # Look for court names and links in the content
+        for paragraph in content_json.get('text', '').split('\n'):
+            # Look for common court naming patterns
+            court_patterns = [
+                r"(.*?Court\s+of\s+Appeals.*?)",
+                r"(.*?District\s+Court.*?)",
+                r"(.*?Superior\s+Court.*?)",
+                r"(.*?Supreme\s+Court.*?)",
+                r"(.*?Circuit\s+Court.*?)",
+                r"(.*?County\s+Court.*?)",
+                r"(.*?Municipal\s+Court.*?)",
+                r"(.*?Bankruptcy\s+Court.*?)",
+                r"(.*?Family\s+Court.*?)",
+                r"(.*?Juvenile\s+Court.*?)",
+                r"(.*?Criminal\s+Court.*?)"
+            ]
+
+            for pattern in court_patterns:
+                matches = re.finditer(pattern, paragraph, re.IGNORECASE)
+                for match in matches:
+                    court_name = match.group(1).strip()
+
+                    # Skip if this court is already found
+                    if any(c['name'] == court_name for c in courts):
+                        continue
+
+                    # Determine court type based on name
+                    court_type = None
+                    if 'Appeals' in court_name:
+                        court_type = 'Courts of Appeals'
+                    elif 'District' in court_name:
+                        court_type = 'District Courts'
+                    elif 'Bankruptcy' in court_name:
+                        court_type = 'Bankruptcy Courts'
+                    elif 'Superior' in court_name:
+                        court_type = 'County Superior Courts'
+                    elif 'Supreme' in court_name:
+                        court_type = 'Supreme Court'
+                    elif 'Circuit' in court_name:
+                        court_type = 'County Circuit Courts'
+                    elif 'Family' in court_name:
+                        court_type = 'County Family Courts'
+                    elif 'Criminal' in court_name:
+                        court_type = 'County Criminal Courts'
+                    elif 'Municipal' in court_name:
+                        court_type = 'Municipal Courts'
+                    else:
+                        court_type = 'Other Courts'
+
+                    # Extract URL if available in the links
+                    court_url = None
+                    for link in content_json.get('links', []):
+                        if court_name.lower() in link.get('text', '').lower():
+                            court_url = urljoin(base_url, link['url'])
+                            break
+
+                    courts.append({
+                        'name': court_name,
+                        'type': court_type,
+                        'url': court_url,
+                        'status': 'Open'  # Default status
+                    })
+
+        logger.info(f"Found {len(courts)} courts in content from {base_url}")
         return courts
+
     except Exception as e:
         logger.error(f"Error extracting courts from page: {str(e)}")
         return []
@@ -421,12 +489,22 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
             logger.warning(f"Failed to download content from {url}")
             return 0, 0
 
-        content = trafilatura.extract(downloaded)
-        if not content:
-            logger.warning(f"No content extracted from {url}")
-            return 0, 0
+        # Extract courts from the main page
+        courts = extract_courts_from_page(downloaded, url)
 
-        courts = extract_courts_from_page(content, url)
+        # Also check for "Find a Court" or similar pages
+        soup = BeautifulSoup(downloaded, 'html.parser')
+        for link in soup.find_all('a'):
+            link_text = link.get_text().lower()
+            if any(term in link_text for term in ['find', 'search', 'directory', 'locations']):
+                sub_url = urljoin(url, link.get('href', ''))
+                sub_content = trafilatura.fetch_url(sub_url)
+                if sub_content:
+                    additional_courts = extract_courts_from_page(sub_content, sub_url)
+                    # Add only new courts
+                    for court in additional_courts:
+                        if not any(c['name'] == court['name'] for c in courts):
+                            courts.append(court)
 
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         cur = conn.cursor()
@@ -449,8 +527,10 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
             is_insert = cur.fetchone()[0]
             if is_insert:
                 new_courts += 1
+                logger.info(f"Added new court: {court['name']}")
             else:
                 updated_courts += 1
+                logger.info(f"Updated existing court: {court['name']}")
 
         conn.commit()
         cur.close()
@@ -700,8 +780,7 @@ def initialize_base_courts() -> None:
                 ) ON CONFLICT (name) DO UPDATE SET
                     url = EXCLUDED.url,
                     status = EXCLUDED.status,
-                    address = EXCLUDED.address,
-                    lat = EXCLUDED.lat,
+                    address = EXCLUDED.address,                    lat = EXCLUDED.lat,
                     lon = EXCLUDED.lon
             """, (
                 f"U.S. District Court for the {name}",
@@ -711,7 +790,6 @@ def initialize_base_courts() -> None:
                 lat,
                 lon
             ))
-
         # Add Major Bankruptcy Courts
         bankruptcy_courts = [
             ("Southern District of New York", "New York, NY", 40.7143, -74.0060),
@@ -781,7 +859,7 @@ def initialize_base_courts() -> None:
 
             # Family Court
             cur.execute("""
-                INSERT INTOcourts (
+                INSERT INTO courts (
                     name, type, jurisdiction_id, status,
                     address, image_url, lat, lon                ) VALUES (
                     %s, 'County Family Courts', %s, 'Open',
