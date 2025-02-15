@@ -65,6 +65,7 @@ def initialize_database():
                 id SERIAL PRIMARY KEY,
                 started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TIMESTAMP,
+                end_time TIMESTAMP,
                 total_sources INTEGER,
                 sources_processed INTEGER DEFAULT 0,
                 new_courts_found INTEGER DEFAULT 0,
@@ -92,6 +93,17 @@ def initialize_database():
             CREATE INDEX IF NOT EXISTS idx_courts_jurisdiction ON courts(jurisdiction_id);
             CREATE INDEX IF NOT EXISTS idx_court_sources_jurisdiction ON court_sources(jurisdiction_id);
             CREATE INDEX IF NOT EXISTS idx_court_sources_active ON court_sources(is_active);
+            CREATE INDEX IF NOT EXISTS idx_inventory_updates_status ON inventory_updates(status);
+        """)
+
+        # Reset any stalled updates
+        cur.execute("""
+            UPDATE inventory_updates 
+            SET status = 'error',
+                completed_at = CURRENT_TIMESTAMP,
+                end_time = CURRENT_TIMESTAMP,
+                message = 'Reset stalled update'
+            WHERE status = 'running'
         """)
 
         conn.commit()
@@ -771,8 +783,7 @@ def initialize_base_courts() -> None:
             """, (
                 f"{county_name} Superior Court",
                 county_id,
-                f"County Courthouse, {county_name}, {state_name}"
-            ))
+                f"County Courthouse, {county_name}, {state_name}"            ))
 
             # Family Court
             cur.execute("""
