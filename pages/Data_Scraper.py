@@ -88,6 +88,7 @@ def display_court_tab(court_type: str, get_courts_func):
             st.error("Unable to connect to database. Please try again later.")
             return
 
+        courts = []
         try:
             courts = get_courts_func(conn) if conn else []
             if courts is None:
@@ -95,7 +96,6 @@ def display_court_tab(court_type: str, get_courts_func):
                 st.warning(f"No {court_type} courts data available")
         except Exception as e:
             logger.error(f"Error getting courts: {str(e)}")
-            courts = []
             st.error(f"Error retrieving {court_type} courts data: {str(e)}")
         finally:
             if conn:
@@ -134,6 +134,10 @@ def display_court_tab(court_type: str, get_courts_func):
                     try:
                         # Initialize scraper run with proper error handling
                         total_courts = len(selected_courts) if selected_courts else len(courts)
+                        if not isinstance(total_courts, int):
+                            total_courts = 0
+                            st.error("Invalid court count. Please try again.")
+                            return
 
                         if total_courts > 0:
                             run_id = initialize_scraper_run(total_courts)
@@ -159,8 +163,9 @@ def display_court_tab(court_type: str, get_courts_func):
                             status.update(label="No courts to scrape", state="error")
                             st.warning("No courts available to scrape")
                     except Exception as e:
-                        logger.error(f"Error during scraping: {str(e)}")
-                        status.update(label=f"Error: {str(e)}", state="error")
+                        error_message = f"Error during scraping: {str(e)}"
+                        logger.error(error_message)
+                        status.update(label=error_message, state="error")
 
         # Display current status if available
         current_status = get_court_type_status(court_type)
@@ -169,8 +174,8 @@ def display_court_tab(court_type: str, get_courts_func):
 
             cols = st.columns(3)
             with cols[0]:
-                total = current_status.get('total_courts', 0)
-                processed = current_status.get('courts_processed', 0)
+                total = current_status.get('total_courts', 0) or 0  # Handle None case
+                processed = current_status.get('courts_processed', 0) or 0  # Handle None case
                 progress = (processed / total * 100) if total > 0 else 0
                 st.metric("Progress", f"{progress:.1f}%")
 

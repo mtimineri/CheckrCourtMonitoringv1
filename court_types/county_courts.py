@@ -9,10 +9,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_county_courts(conn) -> List[Dict]:
-    """Get list of county courts"""
+    """Get list of county courts with improved error handling"""
     logger.info("Getting county courts list...")
-    cur = conn.cursor()
+
+    if conn is None:
+        logger.error("No database connection provided")
+        return []
+
+    cur = None
     try:
+        cur = conn.cursor()
         cur.execute("""
             SELECT c.id, c.name, c.type, c.status, c.url
             FROM courts c
@@ -21,20 +27,28 @@ def get_county_courts(conn) -> List[Dict]:
             ORDER BY c.name
         """)
 
-        courts = [
-            {
-                'id': row[0],
-                'name': row[1],
-                'type': row[2],
-                'status': row[3],
-                'url': row[4]
-            }
-            for row in cur.fetchall()
-        ]
+        courts = []
+        for row in cur.fetchall():
+            if row[0] is not None:  # Ensure ID exists
+                courts.append({
+                    'id': row[0],
+                    'name': row[1] if row[1] else 'Unknown',
+                    'type': row[2] if row[2] else 'Unknown',
+                    'status': row[3] if row[3] else 'Unknown',
+                    'url': row[4] if row[4] else None
+                })
 
+        logger.info(f"Successfully retrieved {len(courts)} county courts")
         return courts
+    except Exception as e:
+        logger.error(f"Error getting county courts: {str(e)}")
+        return []
     finally:
-        cur.close()
+        if cur:
+            try:
+                cur.close()
+            except Exception as e:
+                logger.error(f"Error closing cursor: {str(e)}")
 
 def initialize_county_courts(conn) -> None:
     """Initialize county court records"""
