@@ -30,17 +30,14 @@ with open('styles.css') as f:
 if 'selected_court' not in st.session_state:
     st.session_state.selected_court = None
 
-# Header with Checkr logo
-st.markdown("""
-    <div class='header'>
-        <div class='logo'>Checkr</div>
-        <h1>Court Monitoring Platform</h1>
-    </div>
-""", unsafe_allow_html=True)
+# Navigation and Header
+col1, col2 = st.columns([2, 10])
+with col1:
+    st.markdown('<div class="logo">Checkr</div>', unsafe_allow_html=True)
+with col2:
+    page = st.radio("", ["Court Map", "Scraper Status"], horizontal=True)
 
-# Single navigation in sidebar
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("", ["Court Map", "Scraper Status"])
+st.markdown("<h1 class='header'>Court Monitoring Platform</h1>", unsafe_allow_html=True)
 
 if page == "Court Map":
     st.subheader("Interactive Court Map")
