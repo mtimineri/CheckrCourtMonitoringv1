@@ -17,11 +17,25 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Streamlit App"
+args = "Court Scraper"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Court Scraper"
+args = "Streamlit App"
+
+[[workflows.workflow]]
+name = "Court Scraper"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python court_scraper.py"
 
 [[workflows.workflow]]
 name = "Streamlit App"
@@ -37,20 +51,6 @@ task = "packager.installForAll"
 task = "shell.exec"
 args = "streamlit run main.py"
 waitForPort = 5000
-
-[[workflows.workflow]]
-name = "Court Scraper"
-author = "agent"
-
-[workflows.workflow.metadata]
-agentRequireRestartOnSave = false
-
-[[workflows.workflow.tasks]]
-task = "packager.installForAll"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python court_scraper.py"
 
 [[ports]]
 localPort = 5000
