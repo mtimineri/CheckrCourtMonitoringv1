@@ -25,18 +25,18 @@ stats = get_api_usage_stats()
 if stats['overall']:
     # Display overall metrics
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.metric("Total API Calls", stats['overall']['total_calls'])
-    
+
     with col2:
         st.metric("Total Tokens Used", f"{stats['overall']['total_tokens']:,}")
-    
+
     with col3:
         success_rate = (stats['overall']['successful_calls'] / stats['overall']['total_calls'] * 100 
                        if stats['overall']['total_calls'] else 0)
         st.metric("Success Rate", f"{success_rate:.1f}%")
-    
+
     with col4:
         st.metric("Last Call", format_timestamp(stats['overall']['last_call_time']))
 
@@ -68,6 +68,6 @@ if stats['overall']:
 else:
     st.info("No API usage data available yet. Data will appear here once the court scraper makes API calls.")
 
-# Add auto-refresh button
+# Add refresh button
 if st.button("Refresh Statistics"):
-    st.experimental_rerun()
+    st.rerun()
