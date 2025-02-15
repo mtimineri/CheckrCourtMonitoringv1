@@ -249,26 +249,38 @@ def update_database(courts_data: List[Dict]) -> None:
 
     try:
         logger.info(f"Updating database with {len(courts_data)} courts")
-        import psycopg2
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        conn = get_db_connection()
         cur = conn.cursor()
 
         for court in courts_data:
-            cur.execute("""
-                UPDATE courts SET
-                    status = %s,
-                    lat = %s,
-                    lon = %s,
-                    address = %s,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (
-                court['status'],
-                float(court.get('lat', 0)),
-                float(court.get('lon', 0)),
-                court.get('address', 'Unknown'),
-                court['id']
-            ))
+            try:
+                # Handle potential None values for lat/lon
+                lat = court.get('lat')
+                lon = court.get('lon')
+
+                # Convert to float if present, else use None
+                lat_value = float(lat) if lat is not None else None
+                lon_value = float(lon) if lon is not None else None
+
+                cur.execute("""
+                    UPDATE courts SET
+                        status = %s,
+                        lat = %s,
+                        lon = %s,
+                        address = %s,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (
+                    court['status'],
+                    lat_value,
+                    lon_value,
+                    court.get('address', 'Unknown'),
+                    court['id']
+                ))
+                logger.debug(f"Updated court {court['id']}: {court.get('name', 'Unknown')}")
+            except Exception as e:
+                logger.error(f"Error updating court {court.get('id')}: {str(e)}")
+                continue  # Skip this court but continue with others
 
         conn.commit()
         logger.info("Database update completed successfully")
