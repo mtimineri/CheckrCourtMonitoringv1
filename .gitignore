@@ -47,3 +47,7 @@ poetry.lock
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Secrets and configuration
+.env
+.streamlit/secrets.toml
