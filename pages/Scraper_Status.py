@@ -24,10 +24,11 @@ st.markdown("Monitor court data collection progress and view scraper logs")
 status = get_scraper_status()
 
 if status:
+    # Create three columns for metrics
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Status", status['status'])
+        st.metric("Status", status['status'].title())
 
     with col2:
         progress = (status['courts_processed'] / status['total_courts'] * 100 
@@ -35,10 +36,22 @@ if status:
         st.metric("Progress", f"{progress:.1f}%")
 
     with col3:
-        st.metric("Courts Processed", status['courts_processed'])
+        st.metric("Courts Processed", 
+                 f"{status['courts_processed']}/{status['total_courts']}" 
+                 if status['total_courts'] else "0/0")
 
-    st.text(f"Started: {format_timestamp(status['start_time'])}")
-    st.text(f"Last Updated: {format_timestamp(status['end_time'])}")
+    # Display detailed status information
+    st.subheader("Current Progress")
+    status_col1, status_col2 = st.columns(2)
+
+    with status_col1:
+        st.markdown(f"**Current Stage:** {status.get('stage', 'N/A')}")
+        st.markdown(f"**Current Court:** {status.get('current_court', 'N/A')}")
+        st.markdown(f"**Next Court:** {status.get('next_court', 'N/A')}")
+
+    with status_col2:
+        st.markdown(f"**Started:** {format_timestamp(status['start_time'])}")
+        st.markdown(f"**Last Updated:** {format_timestamp(status['end_time'])}")
 
     if status['message']:
         st.info(status['message'])

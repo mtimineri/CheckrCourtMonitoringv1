@@ -34,7 +34,10 @@ def initialize_database():
             courts_processed INTEGER DEFAULT 0,
             total_courts INTEGER,
             status VARCHAR(50) DEFAULT 'running',
-            message TEXT
+            message TEXT,
+            current_court TEXT,
+            next_court TEXT,
+            stage TEXT
         );
 
         CREATE TABLE IF NOT EXISTS scraper_logs (
@@ -110,7 +113,10 @@ def get_scraper_status():
         'total_courts': 0,
         'message': 'Scraper has not been started',
         'start_time': None,
-        'end_time': None
+        'end_time': None,
+        'current_court': None,
+        'next_court': None,
+        'stage': None
     }
 
 def get_scraper_logs(limit=50):
@@ -145,8 +151,9 @@ def add_scraper_log(level, message, scraper_run_id=None):
     cur.close()
     conn.close()
 
-def update_scraper_status(courts_processed, total_courts=None, status='running', message=None):
-    """Update the scraper status"""
+def update_scraper_status(courts_processed, total_courts=None, status='running', message=None, 
+                         current_court=None, next_court=None, stage=None):
+    """Update the scraper status with detailed progress information"""
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -157,17 +164,20 @@ def update_scraper_status(courts_processed, total_courts=None, status='running',
                 total_courts = %s, 
                 status = %s, 
                 message = %s,
+                current_court = %s,
+                next_court = %s,
+                stage = %s,
                 end_time = CURRENT_TIMESTAMP
             WHERE end_time IS NULL
             RETURNING id
-        """, (courts_processed, total_courts, status, message))
+        """, (courts_processed, total_courts, status, message, current_court, next_court, stage))
     else:
         cur.execute("""
             INSERT INTO scraper_status 
-            (courts_processed, total_courts, status, message)
-            VALUES (%s, %s, %s, %s)
+            (courts_processed, total_courts, status, message, current_court, next_court, stage)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (courts_processed, total_courts, status, message))
+        """, (courts_processed, total_courts, status, message, current_court, next_court, stage))
 
     scraper_run_id = cur.fetchone()
     conn.commit()

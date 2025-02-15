@@ -5,7 +5,7 @@ from openai import OpenAI
 import os
 import time
 from typing import List, Dict
-from court_data import update_scraper_status, add_scraper_log, log_api_usage # Added import for log_api_usage
+from court_data import update_scraper_status, add_scraper_log, log_api_usage
 
 def get_court_data_from_url(url: str) -> str:
     """Fetch and extract text content from a URL"""
@@ -28,11 +28,12 @@ def process_court_data(text: str) -> Dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o",  # Using the latest model as per blueprint
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
-            ]
+            ],
+            response_format={"type": "json_object"}
         )
 
         # Calculate tokens used (approximate based on response)
@@ -40,47 +41,24 @@ def process_court_data(text: str) -> Dict:
 
         # Extract JSON from the response
         content = response.choices[0].message.content
-        try:
-            if content.strip().startswith('{'):
-                result = json.loads(content)
-            else:
-                # Find JSON-like structure in the text
-                start = content.find('{')
-                end = content.rfind('}') + 1
-                if start >= 0 and end > start:
-                    result = json.loads(content[start:end])
-                else:
-                    raise ValueError("No valid JSON found in response")
+        result = json.loads(content)
 
-            # Log successful API usage
-            log_api_usage(
-                endpoint="chat.completions",
-                tokens_used=tokens_used,
-                model="gpt-4",
-                success=True
-            )
+        # Log successful API usage
+        log_api_usage(
+            endpoint="chat.completions",
+            tokens_used=tokens_used,
+            model="gpt-4o",
+            success=True
+        )
 
-            return result
-
-        except json.JSONDecodeError as e:
-            # Log failed API usage
-            log_api_usage(
-                endpoint="chat.completions",
-                tokens_used=tokens_used,
-                model="gpt-4",
-                success=False,
-                error_message=f"JSON decode error: {str(e)}"
-            )
-            print(f"Error parsing JSON response: {e}")
-            print(f"Response content: {content}")
-            return None
+        return result
 
     except Exception as e:
         # Log failed API usage
         log_api_usage(
             endpoint="chat.completions",
             tokens_used=0,  # We don't know tokens used in case of error
-            model="gpt-4",
+            model="gpt-4o",
             success=False,
             error_message=str(e)
         )
@@ -88,44 +66,76 @@ def process_court_data(text: str) -> Dict:
         return None
 
 def get_federal_courts() -> List[Dict]:
-    """Get data for federal courts"""
+    """Get data for federal courts with detailed progress tracking"""
     base_urls = [
-        "https://www.supremecourt.gov",
-        "https://www.uscourts.gov/about-federal-courts/court-website-links/court-website-links",
+        ("Supreme Court of the United States", "https://www.supremecourt.gov"),
+        ("U.S. Courts Directory", "https://www.uscourts.gov/about-federal-courts/court-website-links/court-website-links"),
+        ("Federal Circuit", "http://www.cafc.uscourts.gov"),
+        # Add more courts as needed
     ]
 
     courts_data = []
-    total_courts = len(base_urls)  # Initial estimate
-    scraper_run_id = update_scraper_status(0, total_courts, 'running', 'Starting court data collection')
-    add_scraper_log('INFO', f'Starting scraper run with {total_courts} target courts', scraper_run_id)
+    total_courts = len(base_urls)
+    scraper_run_id = update_scraper_status(
+        0, total_courts, 'running', 
+        'Starting court data collection',
+        current_court='Initializing',
+        stage='Starting'
+    )
 
-    for i, url in enumerate(base_urls, 1):
+    for i, (court_name, url) in enumerate(base_urls, 1):
         try:
-            add_scraper_log('INFO', f'Processing URL: {url}', scraper_run_id)
+            # Update status with current and next court
+            next_court = base_urls[i][0] if i < len(base_urls) else "Completion"
+            update_scraper_status(
+                i, total_courts, 'running',
+                f'Processing {court_name}',
+                current_court=court_name,
+                next_court=next_court,
+                stage='Fetching content'
+            )
+            add_scraper_log('INFO', f'Processing URL for {court_name}: {url}', scraper_run_id)
+
             text = get_court_data_from_url(url)
             if text:
-                add_scraper_log('INFO', f'Successfully fetched content from {url}', scraper_run_id)
+                update_scraper_status(
+                    i, total_courts, 'running',
+                    f'Extracting data from {court_name}',
+                    current_court=court_name,
+                    next_court=next_court,
+                    stage='Extracting data'
+                )
+                add_scraper_log('INFO', f'Successfully fetched content from {court_name}', scraper_run_id)
+
                 court_data = process_court_data(text)
                 if court_data:
                     courts_data.append(court_data)
-                    add_scraper_log('INFO', f'Successfully extracted court data from {url}', scraper_run_id)
+                    add_scraper_log('INFO', f'Successfully extracted data from {court_name}', scraper_run_id)
                 else:
-                    add_scraper_log('ERROR', f'Failed to extract court data from {url}', scraper_run_id)
-                update_scraper_status(i, total_courts, 'running', f'Processed {url}')
-                time.sleep(1)  # Rate limiting
+                    add_scraper_log('ERROR', f'Failed to extract data from {court_name}', scraper_run_id)
+
+            time.sleep(1)  # Rate limiting
+
         except Exception as e:
-            error_message = f'Error processing URL {url}: {str(e)}'
+            error_message = f'Error processing {court_name}: {str(e)}'
             add_scraper_log('ERROR', error_message, scraper_run_id)
-            update_scraper_status(i, total_courts, 'error', error_message)
+            update_scraper_status(
+                i, total_courts, 'error',
+                error_message,
+                current_court=court_name,
+                stage='Error'
+            )
             print(error_message)
 
     completion_message = f'Completed processing {len(courts_data)} courts'
     add_scraper_log('INFO', completion_message, scraper_run_id)
     update_scraper_status(
-        len(courts_data), 
-        total_courts, 
-        'completed', 
-        completion_message
+        len(courts_data),
+        total_courts,
+        'completed',
+        completion_message,
+        current_court='Complete',
+        stage='Finished'
     )
     return courts_data
 
@@ -160,9 +170,9 @@ def update_database(courts_data: List[Dict]) -> None:
         court['name'],
         court['type'],
         court['status'],
-        court['lat'],
-        court['lon'],
-        court['address'],
+        float(court.get('lat', 0)),  # Default to 0 if missing
+        float(court.get('lon', 0)),  # Default to 0 if missing
+        court.get('address', 'Unknown'),  # Default to 'Unknown' if missing
         template_images.get(court['type'], template_images['Other'])
     ) for court in courts_data]
 
