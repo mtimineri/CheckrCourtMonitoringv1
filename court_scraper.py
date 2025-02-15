@@ -4,16 +4,22 @@ import json
 from openai import OpenAI
 import os
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional
 from court_data import update_scraper_status, add_scraper_log, log_api_usage
-from court_inventory import build_court_inventory
+from datetime import datetime
 
-def get_court_data_from_url(url: str) -> str:
+def get_court_data_from_url(url: str) -> Optional[str]:
     """Fetch and extract text content from a URL"""
-    downloaded = trafilatura.fetch_url(url)
-    return trafilatura.extract(downloaded)
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            return None
+        return trafilatura.extract(downloaded)
+    except Exception as e:
+        print(f"Error fetching URL {url}: {str(e)}")
+        return None
 
-def process_court_data(text: str, court_info: Dict) -> Dict:
+def process_court_data(text: str, court_info: Dict) -> Optional[Dict]:
     """Process court data using OpenAI to extract structured information"""
     client = OpenAI()
 
@@ -68,25 +74,64 @@ def process_court_data(text: str, court_info: Dict) -> Dict:
         print(f"Error processing court data: {e}")
         return None
 
-def scrape_courts() -> List[Dict]:
-    """Scrape court data using the inventory"""
-    # First, build or update the court inventory
-    courts_inventory = build_court_inventory()
+def get_courts_to_scrape(court_ids: List[int] = None) -> List[Dict]:
+    """Get courts to scrape from the inventory"""
+    import psycopg2
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
 
-    total_courts = len(courts_inventory)
+    if court_ids:
+        cur.execute("""
+            SELECT 
+                c.id, c.name, c.type, c.url, j.name as jurisdiction
+            FROM courts c
+            JOIN jurisdictions j ON c.jurisdiction_id = j.id
+            WHERE c.id = ANY(%s)
+            ORDER BY c.name
+        """, (court_ids,))
+    else:
+        cur.execute("""
+            SELECT 
+                c.id, c.name, c.type, c.url, j.name as jurisdiction
+            FROM courts c
+            JOIN jurisdictions j ON c.jurisdiction_id = j.id
+            ORDER BY c.name
+        """)
+
+    courts = [
+        {
+            'id': row[0],
+            'name': row[1],
+            'type': row[2],
+            'url': row[3],
+            'jurisdiction': row[4]
+        }
+        for row in cur.fetchall()
+    ]
+
+    cur.close()
+    conn.close()
+    return courts
+
+def scrape_courts(court_ids: List[int] = None) -> List[Dict]:
+    """Scrape court data using the inventory"""
+    # Get courts to scrape from inventory
+    courts_to_scrape = get_courts_to_scrape(court_ids)
+
+    total_courts = len(courts_to_scrape)
     courts_data = []
 
     scraper_run_id = update_scraper_status(
         0, total_courts, 'running',
         'Starting court data collection',
-        current_court='Initializing Inventory',
-        stage='Building court inventory'
+        current_court='Initializing',
+        stage='Starting scraper'
     )
 
-    for i, court in enumerate(courts_inventory, 1):
+    for i, court in enumerate(courts_to_scrape, 1):
         try:
             # Update status with current and next court
-            next_court = courts_inventory[i]['name'] if i < len(courts_inventory) else "Completion"
+            next_court = courts_to_scrape[i]['name'] if i < len(courts_to_scrape) else "Completion"
             update_scraper_status(
                 i, total_courts, 'running',
                 f'Processing {court["name"]}',
@@ -109,6 +154,7 @@ def scrape_courts() -> List[Dict]:
 
                 court_data = process_court_data(text, court)
                 if court_data:
+                    court_data['id'] = court['id']  # Add court ID for database update
                     courts_data.append(court_data)
                     add_scraper_log('INFO', f'Successfully processed {court["name"]}', scraper_run_id)
                 else:
@@ -143,56 +189,32 @@ def scrape_courts() -> List[Dict]:
 def update_database(courts_data: List[Dict]) -> None:
     """Update the database with new court data"""
     import psycopg2
-    from psycopg2.extras import execute_values
-
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor()
 
-    # Insert new data
-    insert_query = """
-    INSERT INTO courts (
-        name, type, status, lat, lon, address, image_url,
-        jurisdiction_id, court_type_id
-    ) VALUES %s
-    ON CONFLICT (name) 
-    DO UPDATE SET
-        status = EXCLUDED.status,
-        lat = EXCLUDED.lat,
-        lon = EXCLUDED.lon,
-        address = EXCLUDED.address,
-        last_updated = CURRENT_TIMESTAMP
-    """
+    for court in courts_data:
+        cur.execute("""
+            UPDATE courts SET
+                status = %s,
+                lat = %s,
+                lon = %s,
+                address = %s,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (
+            court['status'],
+            float(court.get('lat', 0)),
+            float(court.get('lon', 0)),
+            court.get('address', 'Unknown'),
+            court['id']
+        ))
 
-    template_images = {
-        'Supreme Court': 'https://images.unsplash.com/photo-1564596489416-23196d12d85c',
-        'Courts of Appeals': 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-        'District Courts': 'https://images.unsplash.com/photo-1600786288398-e795cfac80aa',
-        'Bankruptcy Courts': 'https://images.unsplash.com/photo-1521984692647-a41fed613ec7',
-        'Other': 'https://images.unsplash.com/photo-1685747750264-a4e932005dde'
-    }
-
-    # Format data for insertion
-    values = [(
-        court['name'],
-        court['type'],
-        court['status'],
-        float(court.get('lat', 0)),
-        float(court.get('lon', 0)),
-        court.get('address', 'Unknown'),
-        template_images.get(court['type'], template_images['Other']),
-        court.get('jurisdiction_id'),
-        court.get('court_type_id')
-    ) for court in courts_data]
-
-    if values:
-        execute_values(cur, insert_query, values)
-        conn.commit()
-
+    conn.commit()
     cur.close()
     conn.close()
 
 if __name__ == "__main__":
-    print("Building court inventory and gathering data...")
+    print("Starting court data collection...")
     courts_data = scrape_courts()
 
     print(f"Updating database with {len(courts_data)} courts...")
