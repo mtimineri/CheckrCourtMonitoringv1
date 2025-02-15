@@ -12,44 +12,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Add navigation
-st.sidebar.title("Navigation")
-pages = {
-    "Court Map": ".",
-    "Scraper Status": "Scraper_Status"
-}
-st.sidebar.markdown(
-    "\n".join(
-        f"- [{'**' if p == 'Court Map' else ''}{p}{'**' if p == 'Court Map' else ''}]({'/' + url if url != '.' else '/'})"
-        for p, url in pages.items()
-    ),
-    unsafe_allow_html=True
-)
-
 # Hide default menu
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
-    /* Custom name for the main page in navigation */
-    section[data-testid="stSidebar"] .element-container:first-child {
-        visibility: hidden;
-    }
-    section[data-testid="stSidebar"] .element-container:first-child::before {
-        content: "Map";
-        visibility: visible;
-        position: absolute;
-        font-weight: bold;
-        font-size: 1rem;
-        margin: 0.5rem 0;
-    }
     </style>
     """, unsafe_allow_html=True)
 
 # Load custom CSS
 with open('styles.css') as f:
     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-
 
 # Initialize session state
 if 'selected_court' not in st.session_state:

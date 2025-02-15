@@ -16,20 +16,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Add navigation
-st.sidebar.title("Navigation")
-pages = {
-    "Court Map": ".",
-    "Scraper Status": "Scraper_Status"
-}
-st.sidebar.markdown(
-    "\n".join(
-        f"- [{'**' if p == 'Scraper Status' else ''}{p}{'**' if p == 'Scraper Status' else ''}]({'/' + url if url != '.' else '/'})"
-        for p, url in pages.items()
-    ),
-    unsafe_allow_html=True
-)
-
 st.markdown("<h1 class='header'>Court Monitoring Platform</h1>", unsafe_allow_html=True)
 st.markdown("### Scraper Status and Court Data")
 st.markdown("Monitor court data collection progress and view court information")
