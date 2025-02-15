@@ -7,6 +7,11 @@ from datetime import datetime, timedelta
 from court_types import federal_courts, state_courts, county_courts
 import psycopg2
 import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def format_timestamp(ts):
     """Format timestamp for display"""
@@ -15,13 +20,21 @@ def format_timestamp(ts):
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 def get_db_connection():
-    return psycopg2.connect(os.environ['DATABASE_URL'])
+    """Get database connection with error handling"""
+    try:
+        return psycopg2.connect(os.environ['DATABASE_URL'])
+    except Exception as e:
+        logger.error(f"Database connection error: {str(e)}")
+        return None
 
 def get_court_type_status(court_type: str):
     """Get scraper status for specific court type"""
     conn = None
     try:
         conn = get_db_connection()
+        if conn is None:
+            logger.error("Database connection failed in get_court_type_status")
+            return None
         cur = conn.cursor()
 
         cur.execute("""
@@ -55,6 +68,7 @@ def get_court_type_status(court_type: str):
             }
         return None
     except Exception as e:
+        logger.error(f"Database error in get_court_type_status: {str(e)}")
         st.error(f"Database error in get_court_type_status: {str(e)}")
         return None
     finally:
@@ -63,26 +77,21 @@ def get_court_type_status(court_type: str):
         if conn:
             conn.close()
 
-# Page configuration
-st.set_page_config(
-    page_title="Scraper Control | Court Monitoring Platform",
-    page_icon="⚖️",
-    layout="wide"
-)
-
-st.title("Court Data Scraper Control")
-st.markdown("Control and monitor the court data scraping process by jurisdiction level")
-
-# Create tabs for different control sections
-tab1, tab2, tab3, tab4 = st.tabs(["Federal Courts", "State Courts", "County Courts", "Schedule Settings"])
-
 def display_court_tab(court_type: str, get_courts_func):
     """Display controls for a specific court type"""
     conn = None
     try:
         conn = get_db_connection()
+        if conn is None:
+            st.error("Unable to connect to database. Please try again later.")
+            return
+
         # Get current court data for selection
-        courts = get_courts_func(conn)
+        try:
+            courts = get_courts_func(conn) or []
+        except Exception as e:
+            logger.error(f"Error getting courts data: {str(e)}")
+            courts = []
 
         col1, col2 = st.columns([2, 1])
 
@@ -102,8 +111,13 @@ def display_court_tab(court_type: str, get_courts_func):
                 ]
 
             # Check if any scraper is running for this court type
-            current_status = get_court_type_status(court_type)
-            is_running = current_status and current_status.get('status') == 'running'
+            try:
+                current_status = get_court_type_status(court_type)
+                is_running = current_status and current_status.get('status') == 'running'
+            except Exception as e:
+                logger.error(f"Error getting court status: {str(e)}")
+                current_status = None
+                is_running = False
 
             # Start scraping button
             if st.button(f"Start Scraping {court_type} Courts", disabled=is_running):
@@ -186,10 +200,24 @@ def display_court_tab(court_type: str, get_courts_func):
                 st.rerun()
 
     except Exception as e:
+        logger.error(f"Error in display_court_tab: {str(e)}")
         st.error(f"Error accessing court data: {str(e)}")
     finally:
         if conn:
             conn.close()
+
+# Page configuration
+st.set_page_config(
+    page_title="Scraper Control | Court Monitoring Platform",
+    page_icon="⚖️",
+    layout="wide"
+)
+
+st.title("Court Data Scraper Control")
+st.markdown("Control and monitor the court data scraping process by jurisdiction level")
+
+# Create tabs for different control sections
+tab1, tab2, tab3, tab4 = st.tabs(["Federal Courts", "State Courts", "County Courts", "Schedule Settings"])
 
 with tab1:
     st.header("Federal Courts")
