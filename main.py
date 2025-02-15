@@ -7,7 +7,7 @@ from components.court_info import display_court_info, display_status_legend
 
 # Page configuration
 st.set_page_config(
-    page_title="Court Monitoring Platform",
+    page_title="Map | Court Monitoring Platform",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -18,6 +18,18 @@ st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
+    /* Custom name for the main page in navigation */
+    section[data-testid="stSidebar"] .element-container:first-child {
+        visibility: hidden;
+    }
+    section[data-testid="stSidebar"] .element-container:first-child::before {
+        content: "Map";
+        visibility: visible;
+        position: absolute;
+        font-weight: bold;
+        font-size: 1rem;
+        margin: 0.5rem 0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
