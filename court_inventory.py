@@ -7,6 +7,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
+from court_data import update_scraper_status, get_db_connection
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -453,14 +454,15 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
 def update_court_inventory(court_type: str = 'all') -> Dict:
     """Update the court inventory from all active sources"""
     logger.info("Starting court inventory update...")
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    conn = get_db_connection()
     cur = conn.cursor()
+    update_id = None
 
     try:
         # Create new update record
         cur.execute("""
-            INSERT INTO inventory_updates (status)
-            VALUES ('running')
+            INSERT INTO inventory_updates (status, message)
+            VALUES ('running', 'Initializing inventory update')
             RETURNING id
         """)
         update_id = cur.fetchone()[0]
@@ -469,7 +471,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
         # Get active sources that need updating based on court type
         if court_type == 'all':
             cur.execute("""
-                SELECT id, jurisdiction_id, source_url 
+                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name 
                 FROM court_sources cs
                 JOIN jurisdictions j ON cs.jurisdiction_id = j.id
                 WHERE cs.is_active = true
@@ -478,7 +480,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             """)
         else:
             cur.execute("""
-                SELECT id, jurisdiction_id, source_url 
+                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name 
                 FROM court_sources cs
                 JOIN jurisdictions j ON cs.jurisdiction_id = j.id
                 WHERE cs.is_active = true
@@ -488,37 +490,31 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             """, (court_type,))
 
         sources = cur.fetchall()
-
         total_sources = len(sources)
         total_new_courts = 0
         total_updated_courts = 0
 
-        # Update inventory tracking
-        cur.execute("""
-            UPDATE inventory_updates 
-            SET total_sources = %s,
-                message = %s
-            WHERE id = %s
-        """, (total_sources, f"Processing {court_type} courts" if court_type != 'all' else "Processing all courts", update_id))
-        conn.commit()
+        # Update initial status
+        update_scraper_status(
+            update_id, 0, total_sources,
+            'running',
+            f"Processing {court_type} courts" if court_type != 'all' else "Processing all courts",
+            stage='Starting inventory update'
+        )
 
-        for i, (source_id, jurisdiction_id, url) in enumerate(sources, 1):
+        for i, (source_id, jurisdiction_id, url, j_type, j_name) in enumerate(sources, 1):
             logger.info(f"Processing source {i}/{total_sources}: {url}")
 
-            # Get jurisdiction type and name
-            cur.execute("""
-                SELECT j.type, j.name 
-                FROM jurisdictions j 
-                WHERE j.id = %s
-            """, (jurisdiction_id,))
-            j_type, j_name = cur.fetchone()
-
             # Update status with jurisdiction details
-            update_scraper_status(update_id, i, total_sources, 'running',
-                                  f'Processing {j_type} jurisdiction: {j_name}',
-                                  current_court=j_name,
-                                  next_court=f"Next source in queue",
-                                  stage=f'Checking {j_type} courts')
+            next_source = "Completion" if i == total_sources else "Next source in queue"
+            update_scraper_status(
+                update_id, i, total_sources,
+                'running',
+                f'Processing {j_type} jurisdiction: {j_name}',
+                current_court=j_name,
+                next_court=next_source,
+                stage=f'Checking {j_type} courts'
+            )
 
             new_courts, updated_courts = process_court_source(source_id, url, jurisdiction_id)
             total_new_courts += new_courts
@@ -534,18 +530,9 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
                     END
                 WHERE id = %s
             """, (new_courts, updated_courts, source_id))
-
-            # Update progress
-            cur.execute("""
-                UPDATE inventory_updates 
-                SET sources_processed = %s,
-                    new_courts_found = %s,
-                    courts_updated = %s
-                WHERE id = %s
-            """, (i, total_new_courts, total_updated_courts, update_id))
             conn.commit()
 
-        # Mark update as complete
+        # Update final status
         completion_message = (
             f"Processed {total_sources} sources for {court_type} courts, "
             f"found {total_new_courts} new courts, updated {total_updated_courts} existing courts"
@@ -554,67 +541,35 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             f"found {total_new_courts} new courts, updated {total_updated_courts} existing courts"
         )
 
-        cur.execute("""
-            UPDATE inventory_updates 
-            SET status = 'completed',
-                completed_at = CURRENT_TIMESTAMP,
-                message = %s
-            WHERE id = %s
-        """, (completion_message, update_id))
-        conn.commit()
+        update_scraper_status(
+            update_id, total_sources, total_sources,
+            'completed', completion_message,
+            current_court='Complete',
+            stage='Finished'
+        )
 
-        result = {
+        return {
             'status': 'completed',
             'total_sources': total_sources,
             'new_courts': total_new_courts,
             'updated_courts': total_updated_courts,
             'court_type': court_type
         }
-        logger.info(f"Inventory update completed: {result}")
-        return result
 
     except Exception as e:
         error_message = f"Error updating court inventory: {str(e)}"
         logger.error(error_message)
         if update_id:
-            cur.execute("""
-                UPDATE inventory_updates 
-                SET status = 'error',
-                    completed_at = CURRENT_TIMESTAMP,
-                    message = %s
-                WHERE id = %s
-            """, (error_message, update_id))
-            conn.commit()
+            update_scraper_status(
+                update_id, 0, total_sources,
+                'error', error_message,
+                current_court='Error',
+                stage='Failed'
+            )
         raise
     finally:
         cur.close()
         conn.close()
-
-def update_scraper_status(update_id, source_processed, total_sources, status, message, current_court=None, next_court=None, stage=None):
-    """Updates the status of the scraper run."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            UPDATE inventory_updates
-            SET sources_processed = %s,
-                status = %s,
-                message = %s,
-                current_court = %s,
-                next_court = %s,
-                stage = %s
-            WHERE id = %s
-        """, (source_processed, status, message, current_court, next_court, stage, update_id))
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Error updating scraper status: {str(e)}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
-
-def get_db_connection():
-    return psycopg2.connect(os.environ['DATABASE_URL'])
 
 def initialize_base_courts() -> None:
     """Initialize base court records"""

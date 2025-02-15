@@ -6,7 +6,7 @@ import os
 import time
 import logging
 from typing import List, Dict, Optional
-from court_data import update_scraper_status, add_scraper_log, log_api_usage
+from court_data import update_scraper_status, add_scraper_log, log_api_usage, get_db_connection
 from datetime import datetime
 from court_types import federal_courts, state_courts, county_courts
 
@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 def initialize_scraper_run(total_courts: int) -> Optional[int]:
     """Initialize a new scraper run and return its ID"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        conn = get_db_connection()
         cur = conn.cursor()
 
         cur.execute("""
@@ -146,12 +145,11 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
     try:
         courts_data = []
         scraper_run_id = None
+        courts_processed = 0
+        total_courts = 0
 
         # Determine which court types to scrape
         court_types = ['federal', 'state', 'county'] if court_type == 'all' else [court_type]
-
-        total_courts = 0
-        courts_processed = 0
 
         # Get total number of courts to scrape
         for ct in court_types:
@@ -167,10 +165,8 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
                 return []
 
             update_scraper_status(
-                scraper_run_id,
-                0, total_courts, 'running',
-                'Starting court data collection',
-                current_court='Initializing',
+                scraper_run_id, 0, total_courts,
+                'running', 'Starting court data collection',
                 stage='Starting scraper'
             )
 
@@ -184,11 +180,10 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
                         logger.info(f"Processing {court['name']}")
 
                         # Update status
-                        next_court = "Completion" if courts_processed == total_courts else f"Next court in queue"
+                        next_court = "Completion" if courts_processed == total_courts else "Next court in queue"
                         update_scraper_status(
-                            scraper_run_id,
-                            courts_processed, total_courts, 'running',
-                            f'Processing {court["name"]}',
+                            scraper_run_id, courts_processed, total_courts,
+                            'running', f"Processing {court['name']}",
                             current_court=court['name'],
                             next_court=next_court,
                             stage='Fetching content'
@@ -203,9 +198,8 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
                         text = get_court_data_from_url(court['url'])
                         if text:
                             update_scraper_status(
-                                scraper_run_id,
-                                courts_processed, total_courts, 'running',
-                                f'Extracting data from {court["name"]}',
+                                scraper_run_id, courts_processed, total_courts,
+                                'running', f"Extracting data from {court['name']}",
                                 current_court=court['name'],
                                 next_court=next_court,
                                 stage='Extracting data'
@@ -230,12 +224,8 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
             # Update final status
             completion_message = f'Completed processing {len(courts_data)} courts'
             update_scraper_status(
-                scraper_run_id,
-                courts_processed,
-                total_courts,
-                'completed',
-                completion_message,
-                current_court='Complete',
+                scraper_run_id, courts_processed, total_courts,
+                'completed', completion_message,
                 stage='Finished'
             )
 
@@ -245,12 +235,8 @@ def scrape_courts(court_ids: Optional[List[int]] = None, court_type: str = 'all'
         logger.error(f"Error in scrape_courts: {str(e)}")
         if scraper_run_id:
             update_scraper_status(
-                scraper_run_id,
-                courts_processed,
-                total_courts,
-                'error',
-                str(e),
-                current_court='Error',
+                scraper_run_id, courts_processed, total_courts,
+                'error', str(e),
                 stage='Failed'
             )
         return []

@@ -3,6 +3,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 
 def get_db_connection():
     """Create a database connection"""
@@ -151,39 +156,48 @@ def add_scraper_log(level, message, scraper_run_id=None):
     cur.close()
     conn.close()
 
-def update_scraper_status(courts_processed, total_courts=None, status='running', message=None, 
-                         current_court=None, next_court=None, stage=None):
-    """Update the scraper status with detailed progress information"""
+def update_scraper_status(scraper_run_id: int, sources_processed: int, total_sources: int, 
+                         status: str, message: str, current_court: str = None, 
+                         next_court: str = None, stage: str = None):
+    """Updates the status of the scraper run with proper parameter handling."""
     conn = get_db_connection()
     cur = conn.cursor()
+    try:
+        if status == 'completed':
+            cur.execute("""
+                UPDATE inventory_updates 
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_court = %s,
+                    next_court = %s,
+                    stage = %s,
+                    end_time = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (sources_processed, total_sources, status, message, 
+                  current_court, next_court, stage, scraper_run_id))
+        else:
+            cur.execute("""
+                UPDATE inventory_updates
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_court = %s,
+                    next_court = %s,
+                    stage = %s
+                WHERE id = %s
+            """, (sources_processed, total_sources, status, message,
+                  current_court, next_court, stage, scraper_run_id))
 
-    if status == 'completed':
-        cur.execute("""
-            UPDATE scraper_status 
-            SET courts_processed = %s, 
-                total_courts = %s, 
-                status = %s, 
-                message = %s,
-                current_court = %s,
-                next_court = %s,
-                stage = %s,
-                end_time = CURRENT_TIMESTAMP
-            WHERE end_time IS NULL
-            RETURNING id
-        """, (courts_processed, total_courts, status, message, current_court, next_court, stage))
-    else:
-        cur.execute("""
-            INSERT INTO scraper_status 
-            (courts_processed, total_courts, status, message, current_court, next_court, stage)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-        """, (courts_processed, total_courts, status, message, current_court, next_court, stage))
-
-    scraper_run_id = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return scraper_run_id[0] if scraper_run_id else None
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating scraper status: {str(e)}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
 
 def get_court_types():
     """Get unique court types from the database"""
