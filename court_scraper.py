@@ -30,7 +30,7 @@ def process_court_data(text: str) -> Dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",  # the newest OpenAI model is "gpt-4o" which was released May 13, 2024
+            model="gpt-4",  # Using standard gpt-4 model
             messages=[
                 {"role": "user", "content": f"{prompt}\n\nText: {text}"}
             ],

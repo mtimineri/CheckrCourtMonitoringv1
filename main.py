@@ -32,8 +32,6 @@ if 'selected_court' not in st.session_state:
 
 # Navigation and Header
 col1, col2 = st.columns([2, 10])
-with col1:
-    st.markdown('<div class="logo">Checkr</div>', unsafe_allow_html=True)
 with col2:
     page = st.radio("", ["Court Map", "Scraper Status"], horizontal=True)
 

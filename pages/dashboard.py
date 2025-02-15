@@ -58,7 +58,7 @@ def render_dashboard():
 
     filtered_df = df[mask].copy()
 
-    # Display the table
+    # Display the table with basic information
     st.dataframe(
         filtered_df[[
             'name', 'type', 'status', 'address'
