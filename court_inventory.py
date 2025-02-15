@@ -71,8 +71,8 @@ def initialize_database():
                 courts_updated INTEGER DEFAULT 0,
                 status VARCHAR(50) DEFAULT 'running',
                 message TEXT,
-                current_court TEXT,
-                next_court TEXT,
+                current_source TEXT,
+                next_source TEXT,
                 stage TEXT
             );
 
@@ -473,9 +473,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
     conn = get_db_connection()
     cur = conn.cursor()
 
-
     try:
-
         # Get active sources that need updating based on court type
         if court_type == 'all':
             cur.execute("""
@@ -519,8 +517,8 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
                 update_id, i, total_sources,
                 'running',
                 f'Processing {j_type} jurisdiction: {j_name}',
-                current_court=j_name,
-                next_court=next_source,
+                current_source=j_name,
+                next_source=next_source,
                 stage=f'Checking {j_type} courts'
             )
 
@@ -552,7 +550,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
         update_scraper_status(
             update_id, total_sources, total_sources,
             'completed', completion_message,
-            current_court='Complete',
+            current_source='Complete',
             stage='Finished'
         )
 
@@ -571,7 +569,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             update_scraper_status(
                 update_id, 0, total_sources,
                 'error', error_message,
-                current_court='Error',
+                current_source='Error',
                 stage='Failed'
             )
         raise
@@ -785,8 +783,7 @@ def initialize_base_courts() -> None:
             cur.execute("""
                 INSERT INTO courts (
                     name, type, jurisdiction_id, status,
-                    address, image_url, lat, lon
-                ) VALUES (
+                    address, image_url, lat, lon                ) VALUES (
                     %s, 'County Family Courts', %s, 'Open',
                     %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
                     NULL, NULL
