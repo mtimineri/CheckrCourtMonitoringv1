@@ -13,8 +13,12 @@ def format_timestamp(ts):
 st.set_page_config(
     page_title="Scraper Status | Court Monitoring Platform",
     page_icon="⚖️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"  # Added this to ensure sidebar visibility
 )
+
+# Add page to sidebar navigation with proper capitalization
+st.sidebar.header("Scraper Status")
 
 st.header("Scraper Status")
 st.markdown("Monitor court data collection progress and view court information")
