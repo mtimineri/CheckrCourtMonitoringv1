@@ -59,7 +59,8 @@ def get_court_sources():
                 cs.is_active,
                 EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
                 ss.court_count,
-                ss.latest_update
+                ss.latest_update,
+                j.parent_id
             FROM court_sources cs
             JOIN jurisdictions j ON cs.jurisdiction_id = j.id
             LEFT JOIN source_stats ss ON ss.id = cs.id
@@ -86,10 +87,11 @@ col1, col2 = st.columns([2, 1])
 with col1:
     update_type = st.selectbox(
         "Select Update Type",
-        options=["All Courts", "Federal Courts", "State Courts", "County Courts"]
+        options=["All Courts", "Federal Courts", "State Courts", "County Courts"],
+        key="update_type_select"
     )
 
-    if st.button("Update Court Inventory Now"):
+    if st.button("Update Court Inventory Now", key="update_inventory_button"):
         try:
             with st.spinner("Updating court inventory..."):
                 court_type = update_type.lower().split()[0]
@@ -147,8 +149,13 @@ if sources:
     # Group sources by jurisdiction type
     source_data = []
     for source in sources:
+        jurisdiction_type = source[2].title()
+        # Handle county jurisdictions
+        if source[10]:  # If parent_id exists, it's a county
+            jurisdiction_type = "County"
+
         source_data.append({
-            'Type': source[2].title(),
+            'Type': jurisdiction_type,
             'Jurisdiction': source[1],
             'Source URL': source[3],
             'Last Checked': format_timestamp(source[4]),
@@ -167,7 +174,8 @@ if sources:
         selected_types = st.multiselect(
             "Filter by Jurisdiction Type",
             options=sorted(source_df['Type'].unique()),
-            default=sorted(source_df['Type'].unique())
+            default=sorted(source_df['Type'].unique()),
+            key="jurisdiction_filter"
         )
 
     # Filter and display data
