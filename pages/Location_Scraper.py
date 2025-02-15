@@ -110,6 +110,7 @@ def get_inventory_status():
                 sources_processed, status, message,
                 current_source, next_source, stage
             FROM inventory_updates
+            WHERE status != 'completed'
             ORDER BY started_at DESC
             LIMIT 1
         """)
@@ -119,13 +120,38 @@ def get_inventory_status():
                 'id': status[0],
                 'start_time': status[1],
                 'end_time': status[2],
-                'total_sources': status[3],
-                'sources_processed': status[4],
-                'status': status[5],
-                'message': status[6],
-                'current_source': status[7],
-                'next_source': status[8],
-                'stage': status[9]
+                'total_sources': status[3] if status[3] is not None else 0,
+                'sources_processed': status[4] if status[4] is not None else 0,
+                'status': status[5] if status[5] else 'unknown',
+                'message': status[6] if status[6] else '',
+                'current_source': status[7] if status[7] else 'None',
+                'next_source': status[8] if status[8] else 'None',
+                'stage': status[9] if status[9] else 'Not started'
+            }
+
+        # If no running status found, get the last completed one
+        cur.execute("""
+            SELECT 
+                id, started_at, completed_at, total_sources,
+                sources_processed, status, message,
+                current_source, next_source, stage
+            FROM inventory_updates
+            ORDER BY started_at DESC
+            LIMIT 1
+        """)
+        status = cur.fetchone()
+        if status:
+            return {
+                'id': status[0],
+                'start_time': status[1],
+                'end_time': status[2],
+                'total_sources': status[3] if status[3] is not None else 0,
+                'sources_processed': status[4] if status[4] is not None else 0,
+                'status': status[5] if status[5] else 'unknown',
+                'message': status[6] if status[6] else '',
+                'current_source': status[7] if status[7] else 'None',
+                'next_source': status[8] if status[8] else 'None',
+                'stage': status[9] if status[9] else 'Not started'
             }
         return None
     except Exception as e:
