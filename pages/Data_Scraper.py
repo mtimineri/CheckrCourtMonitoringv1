@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from court_data import get_court_data, get_scraper_status, get_scraper_logs
-from court_scraper import scrape_courts, update_database
+from court_scraper import scrape_courts, update_database, initialize_scraper_run
 import time
 from datetime import datetime, timedelta
 from court_types import federal_courts, state_courts, county_courts
@@ -89,16 +89,27 @@ def display_court_tab(court_type: str, get_courts_func):
                     if court['name'] in selected_courts
                 ]
 
+            # Check if any other scraper is running for this court type
+            current_status = get_court_type_status(court_type)
+            is_running = current_status and current_status['status'] == 'running'
+
             # Start scraping button
-            if st.button(f"Start Scraping {court_type} Courts"):
+            if st.button(f"Start Scraping {court_type} Courts", disabled=is_running):
                 status_container = st.empty()
                 progress_container = st.empty()
                 message_container = st.empty()
 
                 try:
                     with status_container.status(f"Scraping {court_type} court data...") as status:
-                        status.write("Initializing scraper...")
-                        courts_data = scrape_courts(court_ids=selected_ids, court_type=court_type.lower())
+                        # Initialize scraper run
+                        total_courts = len(selected_courts) if selected_courts else len(courts)
+                        run_id = initialize_scraper_run(total_courts)
+
+                        status.write(f"Starting scraper for {court_type} courts...")
+                        courts_data = scrape_courts(
+                            court_ids=selected_ids,
+                            court_type=court_type.lower()
+                        )
 
                         if courts_data:
                             status.update(label="Updating database...", state="running")
@@ -198,18 +209,16 @@ with tab4:
 
         if st.button("Save Schedule"):
             try:
-                # Configure the scheduled workflow
-                st.success(
-                    f"Scraper scheduled to run {frequency.lower()} starting at {start_time.strftime('%H:%M')}"
-                )
-
-                # Set up the recurring workflow for each selected court type
                 frequency_hours = {
                     "Every 6 hours": 6,
                     "Every 12 hours": 12,
                     "Daily": 24,
                     "Weekly": 168
                 }[frequency]
+
+                st.success(
+                    f"Scraper scheduled to run {frequency.lower()} starting at {start_time.strftime('%H:%M')}"
+                )
 
                 st.code(f"""Schedule configured:
 Court Types: {', '.join(court_types)}
