@@ -15,6 +15,20 @@ st.set_page_config(
 st.title("Court Data")
 st.markdown("Explore and filter court information across jurisdictions")
 
+# Add explanatory text at the top
+st.markdown("""
+### About Court Data
+
+This page provides comprehensive information about courts across different jurisdictions:
+
+- **Search**: Use the search box to find courts by name or address
+- **Filters**: Filter courts by status and type using the sidebar
+- **Map View**: Courts with location data are displayed on the map, colored by their operational status
+- **Download**: Export the filtered data as a CSV file
+
+The data is regularly updated through our court monitoring system.
+""")
+
 # Initialize filters
 with st.sidebar:
     st.header("Filters")
@@ -138,17 +152,3 @@ else:
         "text/csv",
         key='download-csv'
     )
-
-# Add explanatory text
-st.markdown("""
-### About Court Data
-
-This page provides comprehensive information about courts across different jurisdictions:
-
-- **Search**: Use the search box to find courts by name or address
-- **Filters**: Filter courts by status and type using the sidebar
-- **Map View**: Courts with location data are displayed on the map, colored by their operational status
-- **Download**: Export the filtered data as a CSV file
-
-The data is regularly updated through our court monitoring system.
-""")
