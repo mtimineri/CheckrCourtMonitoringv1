@@ -21,19 +21,22 @@ with open('styles.css') as f:
 if 'selected_court' not in st.session_state:
     st.session_state.selected_court = None
 
-# Navigation
-page = st.sidebar.radio("Navigation", ["Dashboard", "Scraper Status"])
-
 # Header with Checkr logo
 st.markdown("""
     <div class='header'>
         <div class='logo'>Checkr</div>
         <h1>Court Monitoring Platform</h1>
-        <p>Real-time status monitoring of United States courts</p>
     </div>
 """, unsafe_allow_html=True)
 
-if page == "Dashboard":
+# Single navigation in sidebar
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("", ["Court Map", "Scraper Status"])
+
+if page == "Court Map":
+    st.subheader("Interactive Court Map")
+    st.markdown("View and interact with court locations across the United States")
+
     # Load data
     df = get_court_data()
     court_types = get_court_types()
@@ -85,5 +88,6 @@ if page == "Dashboard":
             display_court_info(court_info)
 
 else:
-    # Render scraper status page
+    st.subheader("Scraper Status and Court Data")
+    st.markdown("Monitor court data collection progress and view court information")
     render_dashboard()

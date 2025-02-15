@@ -9,10 +9,8 @@ def format_timestamp(ts):
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 def render_dashboard():
-    st.title("Scraper Status")
-
+    """Render the scraper status dashboard"""
     # Display scraper status
-    st.header("Current Status")
     status = get_scraper_status()
 
     if status:
