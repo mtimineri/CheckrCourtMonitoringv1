@@ -1,0 +1,53 @@
+/* Main Styles */
+.main {
+    padding: 1rem;
+}
+
+/* Header Styles */
+.header {
+    color: #0B3D91;
+    margin-bottom: 2rem;
+}
+
+/* Sidebar Styles */
+.sidebar .sidebar-content {
+    background-color: #F0F2F6;
+}
+
+/* Card Styles */
+.court-card {
+    background-color: white;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid #E6E6E6;
+    margin-bottom: 1rem;
+}
+
+/* Status Indicators */
+.status-open {
+    color: #28a745;
+}
+
+.status-closed {
+    color: #dc3545;
+}
+
+.status-limited {
+    color: #ffc107;
+}
+
+/* Map Container */
+.map-container {
+    border: 1px solid #E6E6E6;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    background-color: white;
+}
+
+/* Filter Styles */
+.filter-section {
+    background-color: white;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+}
