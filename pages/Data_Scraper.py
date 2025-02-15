@@ -103,9 +103,8 @@ def display_court_tab(court_type: str, get_courts_func, scrape_func):
                     with status_container.status(
                             f"Scraping {court_type} court data...") as status:
                         status.write("Initializing scraper...")
-                        courts_data = scrape_func(conn,
-                                                selected_ids,
-                                                court_type=court_type.lower())
+                        # Pass court_type as a single argument
+                        courts_data = scrape_courts(selected_ids, court_type.lower())
 
                         if courts_data:
                             status.update(label="Updating database...",
