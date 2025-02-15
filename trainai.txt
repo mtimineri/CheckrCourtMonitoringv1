@@ -1,0 +1,158 @@
+# Court Monitoring Platform - AI Training Guide
+
+## Project Overview
+This is a comprehensive court monitoring platform that provides advanced tracking and visualization of court information across the United States. The system uses web scraping, AI-powered data extraction, and interactive visualizations to maintain up-to-date information about court statuses and operations.
+
+## Key Components
+
+### 1. Web Interface (Streamlit)
+- Main entry point: Court_Map.py
+- Pages directory contains individual feature pages
+- Components directory contains reusable UI elements
+- Uses session state for maintaining interactive state
+- Implemented with wide layout and responsive design
+
+### 2. Data Collection System
+- court_scraper.py handles web scraping operations
+- Uses Trafilatura for content extraction
+- Implements rate limiting and error handling
+- Maintains scraping logs and status updates
+
+### 3. OpenAI Integration (GPT-4o)
+- Latest model: gpt-4o (released May 13, 2024)
+- Used for intelligent content extraction
+- Processes raw court website content
+- Extracts structured information including:
+  * Court status (Open/Closed/Limited Operations)
+  * Location information
+  * Maintenance notices
+  * Scheduled downtimes
+
+### 4. Database Structure (PostgreSQL)
+Key tables:
+- courts: Main court information
+- jurisdictions: Hierarchical jurisdiction data
+- court_sources: Scraping source URLs
+- inventory_updates: Scraping run logs
+- api_usage: OpenAI API usage tracking
+
+### 5. Interactive Features
+- Real-time court status updates
+- Interactive map visualization
+- Advanced filtering system
+- Maintenance tracking
+- Jurisdiction hierarchy visualization
+
+## Implementation Details
+
+### Data Flow
+1. Scraper collects data from court websites
+2. OpenAI processes and structures the content
+3. Data is stored in PostgreSQL
+4. Streamlit frontend displays information
+5. User interactions trigger filtered views
+
+### AI Processing Pattern
+```python
+system_prompt = """Extract court information from the provided text:
+- name: {court_info['name']}
+- type: {court_info['type']}
+- status: one of [Open, Closed, Limited Operations]
+- maintenance_notice: upcoming maintenance
+- maintenance_start: YYYY-MM-DD format
+- maintenance_end: YYYY-MM-DD format"""
+```
+
+### Common Patterns
+1. Database Connections:
+   - Always use get_db_connection() from court_data.py
+   - Implement proper connection closing in finally blocks
+
+2. Status Updates:
+   - Use update_scraper_status() for progress tracking
+   - Include stage, current_court, and next_court info
+
+3. Error Handling:
+   - Log errors using add_scraper_log()
+   - Implement graceful degradation
+   - Maintain operation continuity
+
+### Important Considerations
+1. Rate Limiting:
+   - Implement delays between court website requests
+   - Monitor API usage for OpenAI calls
+   - Log all API interactions
+
+2. Data Validation:
+   - Verify court information before storage
+   - Handle missing or malformed data gracefully
+   - Maintain data consistency
+
+3. User Interface:
+   - Keep UI responsive with async operations
+   - Implement proper loading states
+   - Provide clear feedback on operations
+
+## File Structure
+```
+├── components/              # Reusable UI components
+│   ├── court_info.py       # Court information display
+│   ├── map.py             # Map visualization
+│   └── filters.py         # Search and filter components
+├── pages/                  # Streamlit pages
+│   ├── Court_Data.py      # Court data exploration
+│   ├── Court_Hierarchy.py # Jurisdiction hierarchy
+│   ├── Data_Scraper.py   # Scraper control
+│   └── System_Design.py   # Documentation
+├── court_scraper.py       # Web scraping logic
+├── court_data.py          # Database operations
+└── main.py                # Application entry point
+```
+
+## Common Gotchas
+1. Database Connections:
+   - Always close connections in finally blocks
+   - Use connection pooling for concurrent operations
+
+2. OpenAI API:
+   - Handle rate limits gracefully
+   - Implement exponential backoff for retries
+   - Log all API interactions
+
+3. Data Updates:
+   - Verify data before updates
+   - Maintain atomic operations
+   - Log all significant changes
+
+4. UI Interactions:
+   - Handle session state properly
+   - Implement proper loading states
+   - Provide clear feedback
+
+## Future Development Guidelines
+1. New Features:
+   - Follow existing patterns for consistency
+   - Implement proper error handling
+   - Add appropriate logging
+   - Update documentation
+
+2. Database Changes:
+   - Use proper migrations
+   - Maintain backward compatibility
+   - Update related components
+
+3. AI Integration:
+   - Use latest model versions
+   - Implement proper error handling
+   - Log all interactions
+
+## Best Practices
+1. Always use the latest OpenAI model (currently gpt-4o)
+2. Implement proper error handling and logging
+3. Maintain clean code structure
+4. Document significant changes
+5. Follow existing patterns for consistency
+6. Test changes thoroughly
+7. Update documentation as needed
+
+Remember: The system is designed to be maintainable, scalable, and user-friendly. Keep these principles in mind when making changes or adding features.
