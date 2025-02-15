@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from court_data import get_db_connection
 from datetime import datetime
+import time
+from court_inventory import update_court_inventory
 
 def format_timestamp(ts):
     """Format timestamp for display"""
@@ -63,35 +65,51 @@ st.set_page_config(
 st.title("Court Directory Sources")
 st.markdown("Monitor and manage court directory sources")
 
+# Add update button and handle update process
+col1, col2 = st.columns([2, 1])
+with col1:
+    if st.button("Update Court Inventory Now"):
+        try:
+            with st.spinner("Updating court inventory..."):
+                result = update_court_inventory()
+                st.success(f"Update completed: Found {result['new_courts']} new courts and updated {result['updated_courts']} existing courts")
+        except Exception as e:
+            st.error(f"Error updating inventory: {str(e)}")
+
 # Get current status
 status = get_inventory_status()
 if status:
     # Create metrics
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         progress = (status[4] / status[3] * 100 if status[3] else 0)
         st.metric("Update Progress", f"{progress:.1f}%")
-    
+
     with col2:
         st.metric("New Courts Found", status[5] or 0)
-    
+
     with col3:
         st.metric("Courts Updated", status[6] or 0)
 
     # Status details
     st.subheader("Latest Update Status")
     status_cols = st.columns(2)
-    
+
     with status_cols[0]:
         st.markdown(f"**Status:** {status[7].title()}")
         st.markdown(f"**Started:** {format_timestamp(status[1])}")
         st.markdown(f"**Completed:** {format_timestamp(status[2])}")
-    
+
     with status_cols[1]:
         st.markdown(f"**Sources:** {status[4]}/{status[3]}")
         if status[8]:  # message
             st.info(status[8])
+
+    # Auto-refresh while update is running
+    if status[7] == 'running':
+        time.sleep(2)
+        st.rerun()
 
 # Display court sources
 st.subheader("Directory Sources")
@@ -108,7 +126,7 @@ if sources:
             'Status': 'Active' if source[5] else 'Inactive',
             'Update Frequency': f"{source[6]:.1f} hours"
         })
-    
+
     source_df = pd.DataFrame(source_data)
     st.dataframe(
         source_df,
@@ -144,4 +162,11 @@ These sources are regularly checked to:
 
 The system automatically updates this information based on configured frequencies
 and maintains a history of all updates for auditing purposes.
+
+You can manually trigger an update using the "Update Court Inventory Now" button at the top of the page.
+The update process will:
+1. Check all active sources
+2. Extract court information
+3. Add new courts to the database
+4. Update information for existing courts
 """)
