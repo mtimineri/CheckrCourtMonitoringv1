@@ -22,6 +22,33 @@ logger = logging.getLogger(__name__)
 # do not change this unless explicitly requested by the user
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+def initialize_ai_discovery():
+    """Initialize the AI discovery module"""
+    logger.info("Initializing AI discovery module...")
+    try:
+        # Test OpenAI API key
+        if not os.environ.get("OPENAI_API_KEY"):
+            logger.error("OpenAI API key not found")
+            return False
+
+        # Test OpenAI API with a simple prompt
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "user", "content": "Test connection"}
+                ]
+            )
+            logger.info("Successfully tested OpenAI API connection")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to test OpenAI API: {str(e)}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error initializing AI discovery: {str(e)}")
+        return False
+
 def search_court_directories() -> List[str]:
     """Use OpenAI to generate a list of potential court directory URLs"""
     try:
@@ -375,14 +402,12 @@ Return a JSON object with an array of courts:
     "courts": []
 }"""
 
-        user_prompt = f"Extract court information from this webpage content:\n{content}"
-
         try:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": f"Extract court information from this webpage content:\n{content}"}
                 ],
                 response_format={"type": "json_object"}
             )

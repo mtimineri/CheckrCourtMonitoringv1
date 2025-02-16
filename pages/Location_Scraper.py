@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import time
 from court_inventory import update_court_inventory, update_scraper_status, initialize_court_sources
+from court_ai_discovery import initialize_ai_discovery  # Add AI discovery import
 import logging
 import os
 import psycopg2
@@ -11,10 +12,11 @@ from court_data import get_db_connection
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Initialize court sources if needed
+# Initialize court sources and AI discovery if needed
 if 'sources_initialized' not in st.session_state:
     try:
         initialize_court_sources()
+        initialize_ai_discovery()  # Initialize AI discovery
         st.session_state.sources_initialized = True
         logger.info("Court sources initialized successfully")
     except Exception as e:
@@ -135,7 +137,7 @@ with col1:
                     logger.info("Update process initiated successfully")
 
                 # Force refresh of status
-                st.session_state.update_status = None
+                st.session_state.update_running = True
                 st.rerun()
             else:
                 error_msg = "Invalid response from update process"
@@ -164,7 +166,7 @@ elif status and status.get('status') in ['completed', 'error']:
     st.session_state.update_running = False
 
 # Display status with auto-refresh
-if st.session_state.update_running:
+if st.session_state.update_running and status:  # Only show if status exists
     st.empty()  # Clear previous content
     status_container = st.container()
 
@@ -174,8 +176,8 @@ if st.session_state.update_running:
         # Create metrics
         col1, col2, col3 = st.columns(3)
         with col1:
-            total = status.get('total_sources', 0) or 0
-            processed = status.get('sources_processed', 0) or 0
+            total = status.get('total_sources', 0)
+            processed = status.get('sources_processed', 0)
             progress = (processed / total * 100) if total > 0 else 0
             st.metric(
                 "Update Progress",
@@ -210,13 +212,13 @@ if st.session_state.update_running:
 else:
     # Show regular status display for non-running states
     if status:
-        st.subheader("Current Update Status")
+        st.subheader("Last Update Status")
 
         # Create metrics
         col1, col2, col3 = st.columns(3)
         with col1:
-            total = status.get('total_sources', 0) or 0
-            processed = status.get('sources_processed', 0) or 0
+            total = status.get('total_sources', 0)
+            processed = status.get('sources_processed', 0)
             progress = (processed / total * 100) if total > 0 else 0
             st.metric(
                 "Update Progress",
@@ -237,7 +239,6 @@ else:
                 status.get('new_courts_found', 0),
                 delta=f"+{status.get('courts_updated', 0)} updated"
             )
-
 
 # Display court statistics
 def get_court_stats():

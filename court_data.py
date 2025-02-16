@@ -19,13 +19,14 @@ max_connections = 20
 connection_pool = None
 
 def init_connection_pool():
-    """Initialize the database connection pool"""
+    """Initialize the database connection pool with proper validation"""
     global connection_pool
     try:
         # Parse DATABASE_URL
         url = urlparse(os.environ['DATABASE_URL'])
+        logger.info("Initializing database connection pool...")
 
-        # Create connection pool with minimal configuration
+        # Create connection pool
         connection_pool = pool.SimpleConnectionPool(
             min_connections,
             max_connections,
@@ -35,19 +36,30 @@ def init_connection_pool():
             port=url.port or 5432,
             database=url.path[1:],  # Remove leading slash
         )
-        logger.info("Database connection pool initialized successfully")
+
+        # Validate pool by testing a connection
+        test_conn = connection_pool.getconn()
+        if test_conn:
+            try:
+                cur = test_conn.cursor()
+                cur.execute('SELECT 1')
+                cur.close()
+                logger.info("Database connection pool initialized and validated successfully")
+            finally:
+                connection_pool.putconn(test_conn)
+        return True
     except Exception as e:
         logger.error(f"Error initializing connection pool: {str(e)}")
         connection_pool = None
+        return False
 
 def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[psycopg2.extensions.connection]:
-    """Get a database connection with retry logic"""
+    """Get a database connection with improved retry logic and validation"""
     global connection_pool
 
     # Initialize pool if it doesn't exist
     if connection_pool is None:
-        init_connection_pool()
-        if connection_pool is None:
+        if not init_connection_pool():
             logger.error("Failed to initialize connection pool")
             return None
 
@@ -60,17 +72,19 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
                 cur = conn.cursor()
                 cur.execute('SELECT 1')
                 cur.close()
+                logger.info("Successfully acquired database connection")
                 return conn
             else:
                 # Return bad connection to pool and retry
                 if conn:
                     try:
                         connection_pool.putconn(conn)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"Error returning connection to pool: {str(e)}")
         except Exception as e:
             logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 continue
             else:
