@@ -351,15 +351,15 @@ def get_court_types():
     conn = get_db_connection()
     if conn is None:
         logger.error("Failed to get database connection")
-        return ['Supreme Court', 'Appeals Court', 'District Court', 'Bankruptcy Court', 'Other']
+        return []  # Return empty list instead of hardcoded values
     cur = conn.cursor()
     try:
         cur.execute("SELECT DISTINCT type FROM courts ORDER BY type")
         types = [row[0] for row in cur.fetchall() if row[0] is not None]
-        return types if types else ['Supreme Court', 'Appeals Court', 'District Court', 'Bankruptcy Court', 'Other']
+        return types if types else []  # Return empty list if no types found
     except Exception as e:
         logger.error(f"Error getting court types: {str(e)}")
-        return ['Supreme Court', 'Appeals Court', 'District Court', 'Bankruptcy Court', 'Other']
+        return []  # Return empty list on error
     finally:
         cur.close()
         return_db_connection(conn)
@@ -371,17 +371,17 @@ def get_court_statuses() -> list:
         conn = get_db_connection()
         if conn is None:
             logger.error("Failed to get database connection")
-            return ['Open', 'Closed', 'Limited Operations']  # Default fallback values
+            return []  # Return empty list instead of hardcoded values
 
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT status FROM courts ORDER BY status")
         statuses = [row[0] for row in cur.fetchall() if row[0] is not None]
         cur.close()
 
-        return statuses if statuses else ['Open', 'Closed', 'Limited Operations']
+        return statuses if statuses else []  # Return empty list if no statuses found
     except Exception as e:
         logger.error(f"Error getting court statuses: {str(e)}")
-        return ['Open', 'Closed', 'Limited Operations']  # Default fallback values
+        return []  # Return empty list on error
     finally:
         if conn:
             return_db_connection(conn)

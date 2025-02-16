@@ -3,12 +3,13 @@ import pandas as pd
 from datetime import datetime
 import time
 from court_inventory import update_court_inventory, update_scraper_status, initialize_court_sources
-from court_ai_discovery import initialize_ai_discovery  # Add AI discovery import
+from court_ai_discovery import initialize_ai_discovery
 import logging
 import os
 import psycopg2
-from court_data import get_db_connection
+from court_data import get_db_connection, get_court_types, get_court_statuses
 
+# Set up logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -16,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 if 'sources_initialized' not in st.session_state:
     try:
         initialize_court_sources()
-        initialize_ai_discovery()  # Initialize AI discovery
+        initialize_ai_discovery()
         st.session_state.sources_initialized = True
         logger.info("Court sources initialized successfully")
     except Exception as e:
@@ -46,6 +47,7 @@ def get_inventory_status():
         conn = get_db_connection()
         if conn is None:
             logger.error("Failed to get database connection")
+            st.error("Database connection error. Please try again later.")
             return None
 
         cur = conn.cursor()
@@ -100,6 +102,7 @@ def get_inventory_status():
 
     except Exception as e:
         logger.error(f"Error getting inventory status: {str(e)}")
+        st.error("Error retrieving inventory status. Please try again later.")
         return None
     finally:
         if conn:
@@ -108,9 +111,11 @@ def get_inventory_status():
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])
 with col1:
+    # Get available court types from database
+    court_types = [f"{ct} Courts" for ct in get_court_types()] or ["All Courts"]
     update_type = st.selectbox(
         "Select Update Type",
-        options=["All Courts", "Federal Courts", "State Courts", "County Courts"],
+        options=court_types,
         key="update_type_select"
     )
 
@@ -309,7 +314,6 @@ if stats:
         use_container_width=True,
         hide_index=True
     )
-
 
 
 def get_court_sources():
