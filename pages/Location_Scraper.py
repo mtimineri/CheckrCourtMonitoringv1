@@ -62,7 +62,7 @@ with col1:
 
                 # Force refresh of status
                 st.session_state.update_status = None
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Invalid response from update process")
 
