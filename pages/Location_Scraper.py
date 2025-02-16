@@ -8,7 +8,6 @@ from court_types import federal_courts, state_courts, county_courts
 import logging
 import os
 import psycopg2
-from court_ai_discovery import search_court_directories, process_court_page
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -290,94 +289,19 @@ with col1:
             with st.status("Updating court inventory...") as status:
                 court_type = update_type.lower().split()[0]
 
-                # Initialize update status
+                # Start the court inventory update process
                 result = update_court_inventory(court_type=court_type)
 
-                if result.get('status') != 'error':
-                    # Start court discovery process
-                    st.info(f"Starting enhanced court discovery for {update_type}...")
-
-                    update_id = result.get('update_id')  # Get update_id from the result
-
-                    # Update status for discovery phase
-                    update_scraper_status(
-                        update_id=update_id,
-                        status="running",
-                        sources_processed=0,
-                        total_sources=0,  # Will be updated once we have court URLs
-                        stage="discovery",
-                        message=f"Starting enhanced discovery for {update_type}",
-                        current_source="Fetching court directories"
-                    )
-
-                    # Get court directories based on type
-                    court_urls = search_court_directories()
-
-                    # Update status with total sources
-                    update_scraper_status(
-                        update_id=update_id,
-                        status="running",
-                        sources_processed=0,
-                        total_sources=len(court_urls),
-                        stage="processing",
-                        message=f"Found {len(court_urls)} potential court directories"
-                    )
-
-                    # Filter URLs based on court type
-                    filtered_urls = []
-                    for url in court_urls:
-                        if court_type == 'all':
-                            filtered_urls.append(url)
-                        elif court_type in url.lower():
-                            filtered_urls.append(url)
-
-                    total_courts_found = 0
-                    sources_processed = 0
-
-                    for url in filtered_urls:
-                        # Update status for current source
-                        update_scraper_status(
-                            update_id=update_id,
-                            status="running",
-                            sources_processed=sources_processed,
-                            total_sources=len(filtered_urls),
-                            stage="processing",
-                            current_source=url,
-                            message=f"Processing {url}"
-                        )
-
-                        discovered_courts = process_court_page(url)
-                        total_courts_found += len(discovered_courts)
-                        sources_processed += 1
-
-                        # Update progress in status
-                        update_scraper_status(
-                            update_id=update_id,
-                            status="running",
-                            sources_processed=sources_processed,
-                            total_sources=len(filtered_urls),
-                            stage="processing",
-                            message=f"Processed {sources_processed} of {len(filtered_urls)} sources, found {total_courts_found} courts"
-                        )
-
-                        status.update(label=f"Processing {url}...")
-                        time.sleep(0.1)  # Prevent overwhelming the UI
-
-                    # Final status update
-                    update_scraper_status(
-                        update_id=update_id,
-                        status="completed",
-                        sources_processed=len(filtered_urls),
-                        total_sources=len(filtered_urls),
-                        stage="completed",
-                        message=f"Discovery completed: Found {total_courts_found} courts for {update_type}"
-                    )
-
-                    st.success(f"Discovery completed: Found {total_courts_found} courts for {update_type}")
+                if result.get('status') == 'completed':
+                    st.success(f"Update completed successfully: {result.get('message', '')}")
+                    st.info(f"Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
                     # Reset session state to force progress refresh
                     st.session_state.update_status = None
+                elif result.get('status') == 'error':
+                    st.error(f"Error during update: {result.get('message', '')}")
                 else:
-                    st.error(f"Error starting update: {result.get('message')}")
+                    st.info("Update process started. Please monitor the progress above.")
+
         except Exception as e:
             st.error(f"Error updating inventory: {str(e)}")
             logger.error(f"Error in court discovery: {str(e)}")
