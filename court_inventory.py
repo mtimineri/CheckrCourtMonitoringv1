@@ -13,6 +13,7 @@ from urllib.parse import urljoin
 import re
 import requests
 from bs4 import BeautifulSoup
+from court_ai_discovery import initialize_ai_discovery, search_court_directories
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -401,6 +402,12 @@ def initialize_jurisdictions() -> None:
 def initialize_court_sources() -> None:
     """Initialize known court directory sources with AI assistance"""
     logger.info("Initializing court directory sources...")
+
+    # Initialize AI discovery first
+    if not initialize_ai_discovery():
+        logger.error("Failed to initialize AI discovery module")
+        return
+
     conn = get_db_connection()
     if not conn:
         logger.error("Failed to get database connection")
@@ -417,7 +424,6 @@ def initialize_court_sources() -> None:
         federal_id = result[0]
 
         # Get AI-generated court directory URLs
-        from court_ai_discovery import search_court_directories
         logger.info("Searching for court directory URLs...")
         directory_urls = search_court_directories()
 
