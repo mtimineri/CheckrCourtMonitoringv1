@@ -3,7 +3,6 @@ Court inventory management module.
 Handles discovery and updates of court information.
 """
 import json
-import trafilatura
 from typing import Dict, List, Optional, Tuple
 import psycopg2
 from psycopg2.extras import execute_values
@@ -12,6 +11,7 @@ import logging
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
 import re
+import requests
 from bs4 import BeautifulSoup
 
 # Set up logging
@@ -38,12 +38,12 @@ def update_scraper_status(
     next_source: Optional[str] = None,
     stage: Optional[str] = None
 ) -> None:
-    """Update the status of the current scraper run"""
+    """Update the status of the current scraper run with enhanced progress tracking"""
     conn = None
     try:
         conn = get_db_connection()
         if not conn:
-            logger.error("Failed to get database connection")
+            logger.error("Failed to get database connection for status update")
             return
 
         cur = conn.cursor()
@@ -58,6 +58,7 @@ def update_scraper_status(
                 f"Current: {current_source or 'Starting...'}"
             )
 
+            # Update database with latest status
             cur.execute("""
                 UPDATE inventory_updates
                 SET sources_processed = %s,
@@ -69,9 +70,10 @@ def update_scraper_status(
                     stage = %s,
                     completed_at = CASE 
                         WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP
-                        ELSE completed_at
+                        ELSE NULL
                     END
                 WHERE id = %s
+                RETURNING id;
             """, (
                 sources_processed,
                 total_sources,
@@ -83,7 +85,15 @@ def update_scraper_status(
                 status,
                 update_id
             ))
+
+            # Ensure the update was successful
+            if cur.fetchone() is None:
+                logger.error(f"Failed to update status for run {update_id}")
+                conn.rollback()
+                return
+
             conn.commit()
+            logger.info(f"Successfully updated scraper status: {detailed_message}")
 
         except Exception as e:
             logger.error(f"Error updating scraper status: {str(e)}")
@@ -475,41 +485,30 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
     """Extract court information from page content"""
     try:
         courts = []
+        soup = BeautifulSoup(content, 'html.parser')
 
-        # Extract structured content using trafilatura
-        structured_content = trafilatura.extract(
-            content,
-            output_format='json',
-            include_links=True,
-            include_tables=True,
-            include_formatting=True
-        )
+        # Look for common court naming patterns in text content
+        court_patterns = [
+            r"(.*?Court\s+of\s+Appeals.*?)",
+            r"(.*?District\s+Court.*?)",
+            r"(.*?Superior\s+Court.*?)",
+            r"(.*?Supreme\s+Court.*?)",
+            r"(.*?Circuit\s+Court.*?)",
+            r"(.*?County\s+Court.*?)",
+            r"(.*?Municipal\s+Court.*?)",
+            r"(.*?Bankruptcy\s+Court.*?)",
+            r"(.*?Family\s+Court.*?)",
+            r"(.*?Juvenile\s+Court.*?)",
+            r"(.*?Criminal\s+Court.*?)"
+        ]
 
-        if not structured_content:
-            logger.warning(f"No structured content extracted from {base_url}")
-            return []
-
-        content_json = json.loads(structured_content)
-
-        # Look for court names and links in the content
-        for paragraph in content_json.get('text', '').split('\n'):
-            # Look for common court naming patterns
-            court_patterns = [
-                r"(.*?Court\s+of\s+Appeals.*?)",
-                r"(.*?District\s+Court.*?)",
-                r"(.*?Superior\s+Court.*?)",
-                r"(.*?Supreme\s+Court.*?)",
-                r"(.*?Circuit\s+Court.*?)",
-                r"(.*?County\s+Court.*?)",
-                r"(.*?Municipal\s+Court.*?)",
-                r"(.*?Bankruptcy\s+Court.*?)",
-                r"(.*?Family\s+Court.*?)",
-                r"(.*?Juvenile\s+Court.*?)",
-                r"(.*?Criminal\s+Court.*?)"
-            ]
+        # Extract text from paragraphs and headings
+        text_elements = soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a'])
+        for element in text_elements:
+            text = element.get_text().strip()
 
             for pattern in court_patterns:
-                matches = re.finditer(pattern, paragraph, re.IGNORECASE)
+                matches = re.finditer(pattern, text, re.IGNORECASE)
                 for match in matches:
                     court_name = match.group(1).strip()
 
@@ -540,12 +539,10 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
                     else:
                         court_type = 'Other Courts'
 
-                    # Extract URL if available in the links
+                    # Extract URL if available
                     court_url = None
-                    for link in content_json.get('links', []):
-                        if court_name.lower() in link.get('text', '').lower():
-                            court_url = urljoin(base_url, link['url'])
-                            break
+                    if element.name == 'a' and element.has_attr('href'):
+                        court_url = urljoin(base_url, element['href'])
 
                     courts.append({
                         'name': court_name,
@@ -562,15 +559,21 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
         return []
 
 def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_id: int) -> Tuple[int, int]:
-    """Process a single court source using AI-powered discovery"""
+    """Process a single court source"""
     logger.info(f"Starting to process source ID {source_id} with URL: {url}")
     try:
-        from court_ai_discovery import process_court_page
+        # Use requests instead of trafilatura for more reliable fetching
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        content = response.text
 
-        # Log before calling process_court_page
-        logger.info(f"Calling process_court_page for URL: {url}")
-        courts = process_court_page(url)
-        logger.info(f"Retrieved {len(courts) if courts else 0} courts from {url}")
+        # Extract courts from the page content
+        courts = extract_courts_from_page(content, url)
+        logger.info(f"Retrieved {len(courts)} courts from {url}")
+
+        if not courts:
+            logger.warning(f"No courts found at {url}")
+            return 0, 0
 
         conn = get_db_connection()
         if not conn:
@@ -583,24 +586,16 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
 
         try:
             for court in courts:
-                # Log court data for debugging
-                logger.info(f"Processing court: {court.get('name', 'Unknown')}")
-
-                if not court.get('verified', False) or court.get('confidence', 0) < 0.7:
-                    logger.warning(f"Skipping unverified court: {court.get('name', 'Unknown')}")
-                    continue
-
                 cur.execute("""
                     INSERT INTO courts (
                         name, type, url, jurisdiction_id, status, 
-                        address, last_updated
+                        last_updated
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (name) DO UPDATE
                     SET type = EXCLUDED.type,
                         url = EXCLUDED.url,
                         status = EXCLUDED.status,
-                        address = EXCLUDED.address,
                         last_updated = CURRENT_TIMESTAMP
                     RETURNING (xmax = 0) as is_insert;
                 """, (
@@ -608,8 +603,7 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
                     court['type'],
                     court.get('url'),
                     jurisdiction_id,
-                    court.get('status', 'Unknown'),
-                    court.get('address')
+                    court.get('status', 'Unknown')
                 ))
 
                 is_insert = cur.fetchone()[0]
@@ -1075,115 +1069,6 @@ def return_db_connection(conn):
         conn.close()
     except Exception as e:
         logger.error(f"Error closing database connection: {str(e)}")
-
-def update_scraper_status(
-    update_id: int,
-    sources_processed: int,
-    total_sources: int,
-    status: str,
-    message: str,
-    current_source: Optional[str] = None,
-    next_source: Optional[str] = None,
-    stage: Optional[str] = None
-) -> None:
-    """Update the status of the current scraper run with enhanced progress tracking"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        if not conn:
-            logger.error("Failed to get database connection for status update")
-            return
-
-        cur = conn.cursor()
-        try:
-            # Calculate completion percentage
-            completion_percentage = (sources_processed / total_sources * 100) if total_sources > 0 else 0
-
-            # Format detailed status message
-            detailed_message = (
-                f"{message}\n"
-                f"Progress: {completion_percentage:.1f}% ({sources_processed}/{total_sources} sources)\n"
-                f"Current: {current_source or 'Starting...'}"
-            )
-
-            # Update database with latest status
-            cur.execute("""
-                UPDATE inventory_updates
-                SET sources_processed = %s,
-                    total_sources = %s,
-                    status = %s,
-                    message = %s,
-                    current_source = %s,
-                    next_source = %s,
-                    stage = %s,
-                    completed_at = CASE 
-                        WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP
-                        ELSE NULL
-                    END
-                WHERE id = %s
-                RETURNING id;
-            """, (
-                sources_processed,
-                total_sources,
-                status,
-                detailed_message,
-                current_source,
-                next_source,
-                stage,
-                status,
-                update_id
-            ))
-
-            # Ensure the update was successful
-            if cur.fetchone() is None:
-                logger.error(f"Failed to update status for run {update_id}")
-                conn.rollback()
-                return
-
-            conn.commit()
-            logger.info(f"Successfully updated scraper status: {detailed_message}")
-
-        except Exception as e:
-            logger.error(f"Error updating scraper status: {str(e)}")
-            conn.rollback()
-        finally:
-            cur.close()
-    finally:
-        if conn:
-            conn.close()
-
-def initialize_inventory_run():
-    """Initialize a new inventory update run"""
-    logger.info("Initializing new inventory update run")
-    conn = None
-    try:
-        conn = get_db_connection()
-        if not conn:
-            logger.error("Failed to get database connection")
-            return None
-
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                INSERT INTO inventory_updates 
-                (started_at, status, stage)
-                VALUES (CURRENT_TIMESTAMP, 'running', 'Starting inventory update')
-                RETURNING id;
-            """)
-            run_id = cur.fetchone()[0]
-            conn.commit()
-            logger.info(f"Created new inventory update run with ID: {run_id}")
-            return run_id
-
-        except Exception as e:
-            logger.error(f"Error initializing inventory run: {str(e)}")
-            conn.rollback()
-            return None
-        finally:
-            cur.close()
-    finally:
-        if conn:
-            conn.close()
 
 def get_db_connection():
     """Get a database connection from the connection pool"""
