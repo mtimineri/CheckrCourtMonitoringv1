@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
-from court_data import get_db_connection
 from datetime import datetime
 import time
 from court_inventory import update_court_inventory, update_scraper_status
 import logging
 import os
 import psycopg2
+from court_data import get_db_connection
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -65,6 +65,73 @@ with col1:
             st.error(f"Error updating inventory: {str(e)}")
 
 # Get and display current update status
+def get_inventory_status():
+    """Get the latest inventory update status"""
+    try:
+        conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            return None
+
+        cur = conn.cursor()
+        try:
+            # First check for any running updates
+            cur.execute("""
+                SELECT 
+                    id, started_at, completed_at, total_sources,
+                    sources_processed, status, message,
+                    current_source, next_source, stage,
+                    new_courts_found, courts_updated
+                FROM inventory_updates
+                WHERE status = 'running'
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            status = cur.fetchone()
+
+            if not status:
+                # If no running updates, get the latest completed one
+                cur.execute("""
+                    SELECT 
+                        id, started_at, completed_at, total_sources,
+                        sources_processed, status, message,
+                        current_source, next_source, stage,
+                        new_courts_found, courts_updated
+                    FROM inventory_updates
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                """)
+                status = cur.fetchone()
+
+            if status:
+                return {
+                    'id': status[0],
+                    'start_time': status[1],
+                    'end_time': status[2],
+                    'total_sources': status[3] if status[3] is not None else 0,
+                    'sources_processed': status[4] if status[4] is not None else 0,
+                    'status': status[5] if status[5] else 'unknown',
+                    'message': status[6] if status[6] else '',
+                    'current_source': status[7] if status[7] else 'None',
+                    'next_source': status[8] if status[8] else 'None',
+                    'stage': status[9] if status[9] else 'Not started',
+                    'new_courts_found': status[10] if status[10] is not None else 0,
+                    'courts_updated': status[11] if status[11] is not None else 0
+                }
+            return None
+
+        except Exception as e:
+            logger.error(f"Error getting inventory status: {str(e)}")
+            return None
+        finally:
+            cur.close()
+            if conn:
+                conn.close()
+
+    except Exception as e:
+        logger.error(f"Error in get_inventory_status: {str(e)}")
+        return None
+
 status = get_inventory_status()
 if status:
     st.subheader("Current Update Status")
@@ -102,6 +169,37 @@ if status:
             st.write(status.get('message'))
 
 # Display court statistics
+def get_court_stats():
+    """Get current court statistics"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
+        return None
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT 
+                type,
+                COUNT(*) as count,
+                MAX(last_updated) as latest_update,
+                COUNT(CASE WHEN status = 'Open' THEN 1 END) as open_courts,
+                COUNT(CASE WHEN status = 'Closed' THEN 1 END) as closed_courts,
+                COUNT(CASE WHEN status = 'Limited Operations' THEN 1 END) as limited_courts
+            FROM courts
+            GROUP BY type
+            ORDER BY type;
+        """)
+        return cur.fetchall()
+    except Exception as e:
+        logger.error(f"Error getting court stats: {str(e)}")
+        return None
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
 stats = get_court_stats()
 if stats:
     st.subheader("Current Court Statistics")
@@ -146,37 +244,6 @@ def format_timestamp(ts):
     if ts is None:
         return "N/A"
     return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
-
-def get_court_stats():
-    """Get current court statistics"""
-    conn = get_db_connection()
-    if conn is None:
-        logger.error("Failed to get database connection")
-        return None
-
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT 
-                type,
-                COUNT(*) as count,
-                MAX(last_updated) as latest_update,
-                COUNT(CASE WHEN status = 'Open' THEN 1 END) as open_courts,
-                COUNT(CASE WHEN status = 'Closed' THEN 1 END) as closed_courts,
-                COUNT(CASE WHEN status = 'Limited Operations' THEN 1 END) as limited_courts
-            FROM courts
-            GROUP BY type
-            ORDER BY type;
-        """)
-        return cur.fetchall()
-    except Exception as e:
-        logger.error(f"Error getting court stats: {str(e)}")
-        return None
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
 
 def get_court_sources():
     """Get all court sources with their status"""
@@ -232,67 +299,6 @@ def get_court_sources():
         logger.error(f"Error in get_court_sources: {str(e)}")
         st.error("An unexpected error occurred. Please try again later.")
         return []
-
-def get_inventory_status():
-    """Get the latest inventory update status"""
-    conn = get_db_connection()
-    if conn is None:
-        logger.error("Failed to get database connection")
-        return None
-
-    cur = conn.cursor()
-    try:
-        # First check for any running updates
-        cur.execute("""
-            SELECT 
-                id, started_at, completed_at, total_sources,
-                sources_processed, status, message,
-                current_source, next_source, stage, new_courts_found, courts_updated
-            FROM inventory_updates
-            WHERE status = 'running'
-            ORDER BY started_at DESC
-            LIMIT 1
-        """)
-        status = cur.fetchone()
-
-        if not status:
-            # If no running updates, get the latest completed one
-            cur.execute("""
-                SELECT 
-                    id, started_at, completed_at, total_sources,
-                    sources_processed, status, message,
-                    current_source, next_source, stage, new_courts_found, courts_updated
-                FROM inventory_updates
-                ORDER BY started_at DESC
-                LIMIT 1
-            """)
-            status = cur.fetchone()
-
-        if status:
-            return {
-                'id': status[0],
-                'start_time': status[1],
-                'end_time': status[2],
-                'total_sources': status[3] if status[3] is not None else 0,
-                'sources_processed': status[4] if status[4] is not None else 0,
-                'status': status[5] if status[5] else 'unknown',
-                'message': status[6] if status[6] else '',
-                'current_source': status[7] if status[7] else 'None',
-                'next_source': status[8] if status[8] else 'None',
-                'stage': status[9] if status[9] else 'Not started',
-                'new_courts_found': status[10] if status[10] is not None else 0,
-                'courts_updated': status[11] if status[11] is not None else 0
-            }
-        return None
-
-    except Exception as e:
-        logger.error(f"Error getting inventory status: {str(e)}")
-        return None
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
 
 # Display court sources
 st.subheader("Directory Sources")
