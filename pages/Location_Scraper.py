@@ -98,12 +98,6 @@ def get_court_sources():
         st.error("An unexpected error occurred. Please try again later.")
         return []
 
-def format_timestamp(ts):
-    """Format timestamp for display"""
-    if ts is None:
-        return "N/A"
-    return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
-
 def get_inventory_status():
     """Get the latest inventory update status"""
     conn = get_db_connection()
@@ -113,44 +107,32 @@ def get_inventory_status():
 
     cur = conn.cursor()
     try:
+        # First check for any running updates
         cur.execute("""
             SELECT 
                 id, started_at, completed_at, total_sources,
                 sources_processed, status, message,
                 current_source, next_source, stage, new_courts_found, courts_updated
             FROM inventory_updates
-            WHERE status != 'completed'
+            WHERE status = 'running'
             ORDER BY started_at DESC
             LIMIT 1
         """)
         status = cur.fetchone()
-        if status:
-            return {
-                'id': status[0],
-                'start_time': status[1],
-                'end_time': status[2],
-                'total_sources': status[3] if status[3] is not None else 0,
-                'sources_processed': status[4] if status[4] is not None else 0,
-                'status': status[5] if status[5] else 'unknown',
-                'message': status[6] if status[6] else '',
-                'current_source': status[7] if status[7] else 'None',
-                'next_source': status[8] if status[8] else 'None',
-                'stage': status[9] if status[9] else 'Not started',
-                'new_courts_found': status[10] if status[10] is not None else 0,
-                'courts_updated': status[11] if status[11] is not None else 0
-            }
 
-        # If no running status found, get the last completed one
-        cur.execute("""
-            SELECT 
-                id, started_at, completed_at, total_sources,
-                sources_processed, status, message,
-                current_source, next_source, stage, new_courts_found, courts_updated
-            FROM inventory_updates
-            ORDER BY started_at DESC
-            LIMIT 1
-        """)
-        status = cur.fetchone()
+        if not status:
+            # If no running updates, get the latest completed one
+            cur.execute("""
+                SELECT 
+                    id, started_at, completed_at, total_sources,
+                    sources_processed, status, message,
+                    current_source, next_source, stage, new_courts_found, courts_updated
+                FROM inventory_updates
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            status = cur.fetchone()
+
         if status:
             return {
                 'id': status[0],
@@ -167,6 +149,7 @@ def get_inventory_status():
                 'courts_updated': status[11] if status[11] is not None else 0
             }
         return None
+
     except Exception as e:
         logger.error(f"Error getting inventory status: {str(e)}")
         return None
@@ -175,6 +158,18 @@ def get_inventory_status():
             cur.close()
         if conn:
             conn.close()
+
+def format_timestamp(ts):
+    """Format timestamp for display"""
+    if ts is None:
+        return "N/A"
+    return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+# Initialize session state for progress tracking
+if 'update_status' not in st.session_state:
+    st.session_state.update_status = None
+if 'last_status_check' not in st.session_state:
+    st.session_state.last_status_check = None
 
 # Page configuration
 st.set_page_config(
@@ -185,6 +180,128 @@ st.set_page_config(
 
 st.title("Court Location Scraper")
 st.markdown("Monitor and update the court location inventory")
+
+# Get current status and display metrics
+status = get_inventory_status()
+is_update_running = status and status.get('status') == 'running'
+
+if status:
+    # Store status in session state if it's changed
+    if (st.session_state.update_status is None or 
+        st.session_state.update_status.get('id') != status.get('id') or
+        st.session_state.update_status.get('sources_processed') != status.get('sources_processed')):
+        st.session_state.update_status = status
+        st.session_state.last_status_check = datetime.now()
+
+    # Create metrics with container for dynamic updates
+    metrics_container = st.container()
+
+    with metrics_container:
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            total = status.get('total_sources', 0) or 0
+            processed = status.get('sources_processed', 0) or 0
+            progress = (processed / total * 100) if total > 0 else 0
+            st.metric("Update Progress", f"{progress:.1f}%")
+
+        with col2:
+            st.metric("Sources Processed", f"{processed}/{total}")
+
+        with col3:
+            st.metric("Status", status.get('status', 'Unknown').title())
+
+        # Add additional metrics for better visibility
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("New Courts Found", status.get('new_courts_found', 0))
+            st.metric("Courts Updated", status.get('courts_updated', 0))
+
+        with col2:
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                # Get the last successful update timestamp
+                cur.execute("""
+                    SELECT completed_at 
+                    FROM inventory_updates 
+                    WHERE status = 'completed' 
+                    ORDER BY completed_at DESC 
+                    LIMIT 1
+                """)
+                last_update = cur.fetchone()
+                if last_update:
+                    st.metric("Last Successful Update", format_timestamp(last_update[0]))
+
+                # Get total courts count
+                cur.execute("SELECT COUNT(*) FROM courts")
+                total_courts = cur.fetchone()[0]
+                st.metric("Total Courts in Database", total_courts)
+                cur.close()
+                conn.close()
+
+    # Update status details section
+    details_container = st.container()
+    with details_container:
+        status_details = [
+            ("Current Stage", status.get('stage', 'Not started')),
+            ("Current Source", status.get('current_source', 'None')),
+            ("Next Source", status.get('next_source', 'None')),
+            ("Started", format_timestamp(status.get('start_time'))),
+            ("Completed", format_timestamp(status.get('end_time')))
+        ]
+
+        st.subheader("Update Details")
+        for label, value in status_details:
+            st.text(f"{label}: {value}")
+
+        if status.get('message'):
+            st.info(status.get('message'))
+
+        # Add error logs if any
+        if status.get('status') == 'error':
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                st.error("Latest Error Logs:")
+                cur.execute("""
+                    SELECT timestamp, message 
+                    FROM scraper_logs 
+                    WHERE scraper_run_id = %s 
+                    AND level = 'ERROR'
+                    ORDER BY timestamp DESC 
+                    LIMIT 5
+                """, (status['id'],))
+                error_logs = cur.fetchall()
+                for timestamp, message in error_logs:
+                    st.code(f"{format_timestamp(timestamp)}: {message}")
+                cur.close()
+                conn.close()
+
+# Add update button and handle update process
+col1, col2 = st.columns([2, 1])
+with col1:
+    update_type = st.selectbox(
+        "Select Update Type",
+        options=["All Courts", "Federal Courts", "State Courts", "County Courts"],
+        key="update_type_select",
+        disabled=is_update_running
+    )
+
+    if st.button("Update Court Inventory Now", key="update_inventory_button", disabled=is_update_running):
+        try:
+            with st.status("Updating court inventory...") as status:
+                court_type = update_type.lower().split()[0]
+                result = update_court_inventory(court_type=court_type)
+
+                if result.get('status') != 'error':
+                    st.success(f"Update started: Checking {court_type} courts")
+                    # Reset session state to force progress refresh
+                    st.session_state.update_status = None
+                else:
+                    st.error(f"Error starting update: {result.get('message')}")
+        except Exception as e:
+            st.error(f"Error updating inventory: {str(e)}")
 
 # Display court statistics
 stats = get_court_stats()
@@ -225,131 +342,6 @@ if stats:
         hide_index=True
     )
 
-# Add update button and handle update process
-col1, col2 = st.columns([2, 1])
-with col1:
-    update_type = st.selectbox(
-        "Select Update Type",
-        options=["All Courts", "Federal Courts", "State Courts", "County Courts"],
-        key="update_type_select"
-    )
-
-    if st.button("Update Court Inventory Now", key="update_inventory_button"):
-        try:
-            with st.status("Updating court inventory...") as status:
-                court_type = update_type.lower().split()[0]
-                result = update_court_inventory(court_type=court_type)
-
-                if result.get('status') != 'error':
-                    # Get updated statistics
-                    new_stats = get_court_stats()
-                    if new_stats:
-                        new_stats_df = pd.DataFrame(new_stats, columns=[
-                            'Court Type', 'Total Courts', 'Last Updated',
-                            'Open Courts', 'Closed Courts', 'Limited Operations'
-                        ])
-
-                        st.success(f"""
-                            Update completed successfully:
-                            - Found {result.get('new_courts', 0)} new courts
-                            - Updated {result.get('updated_courts', 0)} existing courts
-                            - Total courts: {new_stats_df['Total Courts'].sum():,}
-                            - Latest update: {format_timestamp(new_stats_df['Last Updated'].max())}
-                        """)
-                    else:
-                        st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts and updated {result.get('updated_courts', 0)} existing courts")
-                else:
-                    st.error(f"Error updating inventory: {result.get('message')}")
-        except Exception as e:
-            st.error(f"Error updating inventory: {str(e)}")
-
-# Get current status
-status = get_inventory_status()
-if status:
-    # Create metrics
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        total = status.get('total_sources', 0) or 0
-        processed = status.get('sources_processed', 0) or 0
-        progress = (processed / total * 100) if total > 0 else 0
-        st.metric("Update Progress", f"{progress:.1f}%")
-
-    with col2:
-        st.metric("Sources Processed", f"{processed}/{total}")
-
-    with col3:
-        st.metric("Status", status.get('status', 'Unknown').title())
-
-    # Add additional metrics for better visibility
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("New Courts Found", status.get('new_courts_found', 0))
-        st.metric("Courts Updated", status.get('courts_updated', 0))
-
-    with col2:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # Get the last successful update timestamp
-        cur.execute("""
-            SELECT completed_at 
-            FROM inventory_updates 
-            WHERE status = 'completed' 
-            ORDER BY completed_at DESC 
-            LIMIT 1
-        """)
-        last_update = cur.fetchone()
-        if last_update:
-            st.metric("Last Successful Update", format_timestamp(last_update[0]))
-
-        # Get total courts count
-        cur.execute("SELECT COUNT(*) FROM courts")
-        total_courts = cur.fetchone()[0]
-        st.metric("Total Courts in Database", total_courts)
-        cur.close()
-        conn.close()
-
-
-    # Update status details section
-    status_details = [
-        ("Status", status.get('status', 'Unknown').title()),
-        ("Started", format_timestamp(status.get('start_time'))),
-        ("Completed", format_timestamp(status.get('end_time'))),
-        ("Current Source", status.get('current_source', 'None')),
-        ("Next Source", status.get('next_source', 'None')),
-        ("Stage", status.get('stage', 'Not started')),
-    ]
-
-    st.subheader("Update Details")
-    for label, value in status_details:
-        st.text(f"{label}: {value}")
-
-    if status.get('message'):
-        st.info(status.get('message'))
-
-    # Add error logs if any
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if status.get('status') == 'error':
-        st.error("Latest Error Logs:")
-        cur.execute("""
-            SELECT timestamp, message 
-            FROM scraper_logs 
-            WHERE scraper_run_id = %s 
-            AND level = 'ERROR'
-            ORDER BY timestamp DESC 
-            LIMIT 5
-        """, (status['id'],))
-        error_logs = cur.fetchall()
-        for timestamp, message in error_logs:
-            st.code(f"{format_timestamp(timestamp)}: {message}")
-    cur.close()
-    conn.close()
-
-    # Auto-refresh while update is running
-    if status.get('status') == 'running':
-        time.sleep(2)
-        st.rerun()
 
 # Display court sources
 st.subheader("Directory Sources")
@@ -398,7 +390,7 @@ if sources:
 else:
     st.info("No court sources configured")
 
-# Add explanatory text
+# Add explanatory text about the court discovery process
 st.markdown("""
 ### About Court Directory Sources
 

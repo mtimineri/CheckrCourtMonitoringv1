@@ -19,15 +19,20 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 def validate_url(url: str) -> bool:
     """Validate URL format and accessibility"""
     try:
+        # Clean up the URL - remove spaces and parenthetical text
+        cleaned_url = url.split('(')[0].strip()
+        if not cleaned_url.startswith(('http://', 'https://')):
+            cleaned_url = 'https://' + cleaned_url
+
         # Basic URL format validation
-        if not url.startswith(('http://', 'https://')):
+        if not re.match(r'^https?://[\w\-.]+(:\d+)?(/[\w\-./?%&=]*)?$', cleaned_url):
             logger.warning(f"Invalid URL format: {url}")
             return False
 
-        # Test URL accessibility
-        downloaded = trafilatura.fetch_url(url)
+        # Test URL accessibility with SSL verification disabled
+        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
         if not downloaded:
-            logger.warning(f"Unable to access URL: {url}")
+            logger.warning(f"Unable to access URL: {cleaned_url}")
             return False
 
         return True
@@ -282,22 +287,27 @@ Return a JSON object with an array of courts:
 def process_court_page(url: str) -> List[Dict]:
     """Process a court webpage and extract verified court information"""
     try:
-        if not validate_url(url):
+        # Clean up the URL - remove spaces and parenthetical text
+        cleaned_url = url.split('(')[0].strip()
+        if not cleaned_url.startswith(('http://', 'https://')):
+            cleaned_url = 'https://' + cleaned_url
+
+        if not validate_url(cleaned_url):
             logger.warning(f"Skipping invalid or inaccessible URL: {url}")
             return []
 
-        downloaded = trafilatura.fetch_url(url)
+        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
         if not downloaded:
-            logger.warning(f"Failed to download content from {url}")
+            logger.warning(f"Failed to download content from {cleaned_url}")
             return []
 
         content = trafilatura.extract(downloaded, include_links=True, include_tables=True)
         if not content:
-            logger.warning(f"No content extracted from {url}")
+            logger.warning(f"No content extracted from {cleaned_url}")
             return []
 
-        courts = discover_courts_from_content(content, url)
-        logger.info(f"Found {len(courts)} verified courts from {url}")
+        courts = discover_courts_from_content(content, cleaned_url)
+        logger.info(f"Found {len(courts)} verified courts from {cleaned_url}")
         return courts
 
     except Exception as e:
