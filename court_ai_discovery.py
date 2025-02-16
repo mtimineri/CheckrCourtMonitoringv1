@@ -7,6 +7,8 @@ import trafilatura
 from urllib.parse import urljoin
 import re
 import urllib3
+import psycopg2
+from court_data import get_db_connection
 
 # Disable SSL verification warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -19,6 +21,87 @@ logger = logging.getLogger(__name__)
 # the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
 # do not change this unless explicitly requested by the user
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+def store_discovered_court(court_data: Dict) -> bool:
+    """Store discovered court in the database"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection")
+            return False
+
+        cur = conn.cursor()
+        try:
+            # Check if court already exists
+            cur.execute("""
+                SELECT id FROM courts 
+                WHERE name = %s AND jurisdiction_id = (
+                    SELECT id FROM jurisdictions WHERE name = %s
+                )
+            """, (court_data['name'], court_data.get('jurisdiction', 'Federal')))
+
+            existing_court = cur.fetchone()
+
+            if existing_court:
+                # Update existing court
+                cur.execute("""
+                    UPDATE courts 
+                    SET type = %s,
+                        status = %s,
+                        address = %s,
+                        last_updated = CURRENT_TIMESTAMP,
+                        contact_info = %s
+                    WHERE id = %s
+                """, (
+                    court_data['type'],
+                    court_data['status'],
+                    court_data.get('address'),
+                    json.dumps(court_data.get('contact_info', {})),
+                    existing_court[0]
+                ))
+                logger.info(f"Updated existing court: {court_data['name']}")
+            else:
+                # Get or create jurisdiction
+                jurisdiction_type = 'federal' if 'Federal' in court_data['type'] else 'state'
+                cur.execute("""
+                    INSERT INTO jurisdictions (name, type)
+                    VALUES (%s, %s)
+                    ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type
+                    RETURNING id
+                """, (court_data.get('jurisdiction', 'Federal'), jurisdiction_type))
+
+                jurisdiction_id = cur.fetchone()[0]
+
+                # Insert new court
+                cur.execute("""
+                    INSERT INTO courts (
+                        name, type, status, jurisdiction_id, 
+                        address, contact_info, last_updated
+                    ) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                """, (
+                    court_data['name'],
+                    court_data['type'],
+                    court_data['status'],
+                    jurisdiction_id,
+                    court_data.get('address'),
+                    json.dumps(court_data.get('contact_info', {}))
+                ))
+                logger.info(f"Inserted new court: {court_data['name']}")
+
+            conn.commit()
+            return True
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Database error storing court {court_data['name']}: {str(e)}")
+            return False
+        finally:
+            cur.close()
+            conn.close()
+
+    except Exception as e:
+        logger.error(f"Error storing court data: {str(e)}")
+        return False
 
 def validate_url(url: str) -> bool:
     """Validate URL format and accessibility"""
@@ -286,7 +369,7 @@ def process_court_page(url: str) -> List[Dict]:
             logger.warning(f"Skipping invalid or inaccessible URL: {url}")
             return []
 
-        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
             return []
@@ -297,8 +380,17 @@ def process_court_page(url: str) -> List[Dict]:
             return []
 
         courts = discover_courts_from_content(content, cleaned_url)
-        logger.info(f"Found {len(courts)} verified courts from {cleaned_url}")
-        return courts
+        stored_courts = []
+
+        for court in courts:
+            if store_discovered_court(court):
+                stored_courts.append(court)
+                logger.info(f"Successfully stored court: {court['name']}")
+            else:
+                logger.error(f"Failed to store court: {court['name']}")
+
+        logger.info(f"Found and stored {len(stored_courts)} verified courts from {cleaned_url}")
+        return stored_courts
 
     except Exception as e:
         logger.error(f"Error processing court page: {str(e)}")

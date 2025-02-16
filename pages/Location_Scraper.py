@@ -357,7 +357,7 @@ with col1:
                             sources_processed=sources_processed,
                             total_sources=len(filtered_urls),
                             stage="processing",
-                            message=f"Processed {sources_processed} of {len(filtered_urls)} sources"
+                            message=f"Processed {sources_processed} of {len(filtered_urls)} sources, found {total_courts_found} courts"
                         )
 
                         status.update(label=f"Processing {url}...")
