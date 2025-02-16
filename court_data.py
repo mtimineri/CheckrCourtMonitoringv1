@@ -26,7 +26,7 @@ def init_connection_pool():
         url = urlparse(os.environ['DATABASE_URL'])
         logger.info("Initializing database connection pool...")
 
-        # Create connection pool with increased capacity
+        # Create connection pool with increased capacity and SSL parameters
         connection_pool = pool.SimpleConnectionPool(
             min_connections,
             max_connections,
@@ -35,6 +35,8 @@ def init_connection_pool():
             host=url.hostname,
             port=url.port or 5432,
             database=url.path[1:],  # Remove leading slash
+            sslmode='require',  # Enforce SSL
+            connect_timeout=10  # Add connection timeout
         )
 
         # Validate pool by testing a connection
@@ -83,24 +85,35 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
                     except Exception as e:
                         logger.error(f"Error returning connection to pool: {str(e)}")
 
-                # Add a small delay before retry
+                # Add exponential backoff delay before retry
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                    backoff_delay = min(retry_delay * (2 ** attempt), 10)  # Cap at 10 seconds
+                    logger.info(f"Retrying connection in {backoff_delay} seconds...")
+                    time.sleep(backoff_delay)
 
-        except pool.PoolError as e:
-            logger.error(f"Connection pool error (attempt {attempt + 1}): {str(e)}")
-            # If pool is exhausted, wait longer before retry
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            logger.error(f"Database connection error (attempt {attempt + 1}): {str(e)}")
+            if "SSL" in str(e):
+                # For SSL-specific errors, try reinitializing the pool
+                if init_connection_pool():
+                    logger.info("Successfully reinitialized connection pool after SSL error")
+                else:
+                    logger.error("Failed to reinitialize connection pool after SSL error")
+
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * 2)
-                continue
+                backoff_delay = min(retry_delay * (2 ** attempt), 10)
+                logger.info(f"Retrying connection in {backoff_delay} seconds...")
+                time.sleep(backoff_delay)
+            continue
         except Exception as e:
-            logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Unexpected database error (attempt {attempt + 1}): {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            else:
-                logger.error("All connection attempts failed")
-                return None
+                backoff_delay = min(retry_delay * (2 ** attempt), 10)
+                logger.info(f"Retrying connection in {backoff_delay} seconds...")
+                time.sleep(backoff_delay)
+            continue
+
+    logger.error("All connection attempts failed")
     return None
 
 def return_db_connection(conn):

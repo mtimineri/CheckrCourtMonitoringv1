@@ -9,7 +9,7 @@ import re
 import urllib3
 import psycopg2
 import time
-from court_data import get_db_connection
+from court_data import get_db_connection, return_db_connection
 
 # Disable SSL verification warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -74,7 +74,7 @@ Rules:
 
         try:
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",  
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": "Generate a list of valid US court directory URLs"}
@@ -132,14 +132,14 @@ def store_discovered_court(court_data: Dict) -> bool:
                 if conn is None:
                     logger.error(f"Failed to get database connection (attempt {attempt + 1}/{max_retries})")
                     if attempt < max_retries - 1:
-                        time.sleep(2)  # Wait before retry
+                        time.sleep(2 ** attempt)  # Exponential backoff
                         continue
                     return False
                 break
             except Exception as e:
                 logger.error(f"Database connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    time.sleep(2 ** attempt)
                     continue
                 return False
 
@@ -166,6 +166,7 @@ def store_discovered_court(court_data: Dict) -> bool:
             jurisdiction_id = jurisdiction_id[0]
 
             # Insert or update court with jurisdiction
+            # Use name and jurisdiction_id as composite unique identifier
             cur.execute("""
                 INSERT INTO courts (
                     name, type, status, jurisdiction_id, 
@@ -219,8 +220,8 @@ def store_discovered_court(court_data: Dict) -> bool:
 
     return False
 
-def validate_url(url: str) -> bool:
-    """Validate URL format and accessibility"""
+def validate_url(url: str) -> tuple[bool, str]:
+    """Validate URL format and accessibility, return tuple of (is_valid, reason)"""
     try:
         # Clean up the URL
         cleaned_url = url.split('(')[0].strip()
@@ -230,27 +231,89 @@ def validate_url(url: str) -> bool:
         # Basic URL format validation
         if not re.match(r'^https?://[\w\-.]+(:\d+)?(/[\w\-./?%&=]*)?$', cleaned_url):
             logger.warning(f"Invalid URL format: {url}")
-            return False
+            return False, "invalid_format"
 
-        # Test URL accessibility with retry logic
+        # Test URL accessibility with retry logic and SSL verification disabled for testing
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                # First try with SSL verification
                 downloaded = trafilatura.fetch_url(cleaned_url)
                 if downloaded:
-                    return True
+                    return True, "success"
+
+                # If failed, try without SSL verification
+                downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
+                if downloaded:
+                    logger.warning(f"URL {cleaned_url} accessible only with SSL verification disabled")
+                    return False, "ssl_verification_failed"
+
                 logger.warning(f"Attempt {attempt + 1}: Unable to access URL: {cleaned_url}")
-                time.sleep(2)  # Wait before retry
+                time.sleep(2 ** attempt)  # Exponential backoff
             except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {cleaned_url}: {str(e)}")
+                error_message = str(e)
+                logger.warning(f"Attempt {attempt + 1} failed for {cleaned_url}: {error_message}")
+
+                # Check for different types of errors
+                if "No address associated with hostname" in error_message:
+                    return False, "dns_error"
+                elif "too many redirects" in error_message:
+                    return False, "redirect_loop"
+                elif "CERTIFICATE_VERIFY_FAILED" in error_message:
+                    return False, "ssl_cert_invalid"
+                elif "SSLError" in error_message:
+                    return False, "ssl_error"
+
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    time.sleep(2 ** attempt)
                 continue
 
-        return False
+        return False, "connection_failed"
     except Exception as e:
         logger.error(f"Error validating URL {url}: {str(e)}")
+        return False, f"error: {str(e)}"
+
+def store_invalid_url(url: str, reason: str):
+    """Store invalid URL in the database to avoid future attempts"""
+    conn = get_db_connection()
+    if conn is None:
+        logger.error("Failed to get database connection")
         return False
+
+    try:
+        cur = conn.cursor()
+        # Create table if it doesn't exist
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS invalid_urls (
+                url TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                first_failure TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Insert or update invalid URL
+        cur.execute("""
+            INSERT INTO invalid_urls (url, reason)
+            VALUES (%s, %s)
+            ON CONFLICT (url) 
+            DO UPDATE SET 
+                last_checked = CURRENT_TIMESTAMP,
+                reason = EXCLUDED.reason
+        """, (url, reason))
+
+        conn.commit()
+        logger.info(f"Stored invalid URL {url} with reason: {reason}")
+        return True
+    except Exception as e:
+        logger.error(f"Error storing invalid URL {url}: {str(e)}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if cur:
+            cur.close()
+        return_db_connection(conn)
 
 def clean_and_validate_url(url: str) -> Optional[str]:
     """Clean and validate a URL, returning None if invalid"""
@@ -269,23 +332,41 @@ def clean_and_validate_url(url: str) -> Optional[str]:
         return None
 
 def process_court_page(url: str) -> List[Dict]:
-    """Process a court webpage and extract verified court information"""
+    """Process a court webpage and extract verified court information with improved error handling"""
     try:
         logger.info(f"Starting to process URL: {url}")
 
-        # Clean up the URL - remove spaces and parenthetical text
-        cleaned_url = url.split('(')[0].strip()
-        if not cleaned_url.startswith(('http://', 'https://')):
-            cleaned_url = 'https://' + cleaned_url
-
-        if not validate_url(cleaned_url):
-            logger.warning(f"Skipping invalid or inaccessible URL: {url}")
+        # Clean up the URL
+        cleaned_url = clean_and_validate_url(url)
+        if not cleaned_url:
+            logger.warning(f"Invalid URL format: {url}")
             return []
 
-        logger.info(f"Fetching content from {cleaned_url}")
-        downloaded = trafilatura.fetch_url(cleaned_url)
+        # Use retry logic with exponential backoff
+        max_retries = 3
+        downloaded = None
+
+        for attempt in range(max_retries):
+            try:
+                downloaded = trafilatura.fetch_url(cleaned_url)
+                if downloaded:
+                    break
+
+                backoff_time = min(2 ** attempt, 10)  # Exponential backoff, max 10 seconds
+                logger.warning(f"Attempt {attempt + 1}: Unable to download content from {cleaned_url}. "
+                             f"Retrying in {backoff_time} seconds...")
+                time.sleep(backoff_time)
+
+            except Exception as e:
+                backoff_time = min(2 ** attempt, 10)
+                logger.warning(f"Download attempt {attempt + 1} failed for {cleaned_url}: {str(e)}. "
+                             f"Retrying in {backoff_time} seconds...")
+                if attempt < max_retries - 1:
+                    time.sleep(backoff_time)
+                continue
+
         if not downloaded:
-            logger.warning(f"Failed to download content from {cleaned_url}")
+            logger.warning(f"Failed to download content from {cleaned_url} after {max_retries} attempts")
             return []
 
         content = trafilatura.extract(downloaded, include_links=True, include_tables=True)
@@ -294,19 +375,34 @@ def process_court_page(url: str) -> List[Dict]:
             return []
 
         logger.info(f"Successfully extracted content from {cleaned_url}, content length: {len(content)}")
-        courts = discover_courts_from_content(content, cleaned_url)
-        logger.info(f"Discovered {len(courts)} potential courts from content")
+
+        # Process content in chunks if too large
+        max_chunk_size = 4000
+        content_chunks = [content[i:i + max_chunk_size] 
+                        for i in range(0, len(content), max_chunk_size)]
+
+        all_courts = []
+        for chunk in content_chunks:
+            try:
+                courts = discover_courts_from_content(chunk, cleaned_url)
+                all_courts.extend(courts)
+            except Exception as e:
+                logger.error(f"Error processing content chunk from {cleaned_url}: {str(e)}")
+                continue
+
+        logger.info(f"Discovered {len(all_courts)} potential courts from content")
 
         # Verify each court before returning
         verified_courts = []
-        for court in courts:
+        for court in all_courts:
             try:
                 verified_court = verify_court_info(court)
                 if verified_court.get('verified', False):
                     verified_courts.append(verified_court)
                     logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
                 else:
-                    logger.warning(f"Court verification failed for {court.get('name', 'Unknown')}: {verified_court.get('message', 'Unknown reason')}")
+                    logger.warning(f"Court verification failed for {court.get('name', 'Unknown')}: "
+                                 f"{verified_court.get('message', 'Unknown reason')}")
             except Exception as e:
                 logger.error(f"Error verifying court {court.get('name', 'Unknown')}: {str(e)}")
                 continue
@@ -466,7 +562,7 @@ Return a JSON object with an array of courts:
         return []
 
 def test_discovery_process():
-    """Test the entire discovery process end-to-end with improved error handling"""
+    """Test the entire discovery process end-to-end with improved error handling and timeouts"""
     try:
         logger.info("Starting discovery process test")
 
@@ -482,14 +578,31 @@ def test_discovery_process():
         total_courts_found = 0
         total_courts_stored = 0
         failed_courts = []
+        skipped_urls = []
+        invalid_urls = []
 
-        # Process all URLs
+        # Process all URLs with per-URL timeout
         for url in urls:
             logger.info(f"\nProcessing URL: {url}")
             try:
-                # Add timeout to prevent hanging
-                with urllib3.Timeout(connect=10, read=30):
-                    courts = process_court_page(url)
+                # Set a maximum time limit for each URL
+                start_time = time.time()
+                max_url_time = 180  # 3 minutes max per URL
+
+                # Validate URL first
+                is_valid, reason = validate_url(url)
+                if not is_valid:
+                    logger.warning(f"Invalid URL {url}: {reason}")
+                    invalid_urls.append((url, reason))
+                    store_invalid_url(url, reason)
+                    continue
+
+                courts = process_court_page(url)
+
+                if time.time() - start_time > max_url_time:
+                    logger.warning(f"URL processing time exceeded limit for {url}")
+                    skipped_urls.append(url)
+                    continue
 
                 if courts:
                     logger.info(f"Found {len(courts)} courts from {url}")
@@ -510,18 +623,23 @@ def test_discovery_process():
                 # Add a small delay between requests
                 time.sleep(2)
 
-            except urllib3.exceptions.TimeoutError:
-                logger.error(f"Timeout processing URL {url}")
-                continue
             except Exception as e:
                 logger.error(f"Error processing URL {url}: {str(e)}", exc_info=True)
+                skipped_urls.append(url)
                 continue
 
+        # Log detailed results
         logger.info(f"\nTest Results:")
         logger.info(f"Total courts found: {total_courts_found}")
         logger.info(f"Total courts stored: {total_courts_stored}")
         if failed_courts:
             logger.warning(f"Failed to store {len(failed_courts)} courts: {', '.join(failed_courts)}")
+        if skipped_urls:
+            logger.warning(f"Skipped {len(skipped_urls)} URLs due to errors or timeouts: {', '.join(skipped_urls)}")
+        if invalid_urls:
+            logger.warning(f"Invalid URLs found: {len(invalid_urls)}")
+            for url, reason in invalid_urls:
+                logger.warning(f"  - {url}: {reason}")
 
         return True
 
