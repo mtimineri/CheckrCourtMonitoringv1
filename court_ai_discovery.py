@@ -16,6 +16,25 @@ logger = logging.getLogger(__name__)
 # do not change this unless explicitly requested by the user
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+def validate_url(url: str) -> bool:
+    """Validate URL format and accessibility"""
+    try:
+        # Basic URL format validation
+        if not url.startswith(('http://', 'https://')):
+            logger.warning(f"Invalid URL format: {url}")
+            return False
+
+        # Test URL accessibility
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            logger.warning(f"Unable to access URL: {url}")
+            return False
+
+        return True
+    except Exception as e:
+        logger.error(f"Error validating URL {url}: {str(e)}")
+        return False
+
 def search_court_directories() -> List[str]:
     """
     Use OpenAI to generate a list of potential court directory URLs
@@ -179,10 +198,12 @@ Respond with a JSON object containing:
         return court_data
 
 def discover_courts_from_content(content: str, base_url: str) -> List[Dict]:
-    """
-    Use OpenAI to discover courts from webpage content
-    """
+    """Use OpenAI to discover courts from webpage content"""
     try:
+        if not content.strip():
+            logger.warning("Empty content provided for court discovery")
+            return []
+
         system_prompt = """As a court information extraction expert, analyze the provided webpage content and identify all courts mentioned. Extract:
 
 1. Court names and types (be specific about jurisdiction level)
@@ -218,44 +239,53 @@ Return a JSON object with an array of courts:
 
         user_prompt = f"Extract court information from this webpage content:\n{content}"
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
 
-        result = json.loads(response.choices[0].message.content)
-        courts = result.get('courts', [])
+            result = json.loads(response.choices[0].message.content)
+            courts = result.get('courts', [])
 
-        # Verify each discovered court
-        verified_courts = []
-        for court in courts:
-            if not court.get('url') and 'name' in court:
-                # Try to find URL in original content
-                court_name_pattern = re.escape(court['name'])
-                url_match = re.search(f'href=[\'"]([^\'"]*){court_name_pattern}[\'"]', content)
-                if url_match:
-                    court['url'] = urljoin(base_url, url_match.group(1))
+            # Verify each discovered court
+            verified_courts = []
+            for court in courts:
+                if not court.get('url') and 'name' in court:
+                    # Try to find URL in original content
+                    court_name_pattern = re.escape(court['name'])
+                    url_match = re.search(f'href=[\'"]([^\'"]*){court_name_pattern}[\'"]', content)
+                    if url_match:
+                        matched_url = url_match.group(1)
+                        # Ensure URL is absolute
+                        court['url'] = urljoin(base_url, matched_url)
 
-            verified_court = verify_court_info(court)
-            if verified_court.get('verified', False) and verified_court.get('confidence', 0) > 0.7:
-                verified_courts.append(verified_court)
+                verified_court = verify_court_info(court)
+                if verified_court.get('verified', False) and verified_court.get('confidence', 0) > 0.7:
+                    verified_courts.append(verified_court)
 
-        logger.info(f"Discovered and verified {len(verified_courts)} courts from content at {base_url}")
-        return verified_courts
+            logger.info(f"Discovered and verified {len(verified_courts)} courts from content at {base_url}")
+            return verified_courts
+
+        except Exception as e:
+            logger.error(f"Error in OpenAI API call: {str(e)}")
+            return []
 
     except Exception as e:
         logger.error(f"Error discovering courts: {str(e)}")
         return []
 
 def process_court_page(url: str) -> List[Dict]:
-    """
-    Process a court webpage and extract verified court information
-    """
+    """Process a court webpage and extract verified court information"""
     try:
+        if not validate_url(url):
+            logger.warning(f"Skipping invalid or inaccessible URL: {url}")
+            return []
+
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             logger.warning(f"Failed to download content from {url}")

@@ -278,28 +278,43 @@ def initialize_jurisdictions() -> None:
 def initialize_court_sources() -> None:
     """Initialize known court directory sources with AI assistance"""
     logger.info("Initializing court directory sources...")
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
-    cur = conn.cursor()
+    conn = get_db_connection()
+    if not conn:
+        logger.error("Failed to get database connection")
+        return
 
+    cur = conn.cursor()
     try:
         # Get federal jurisdiction ID
         cur.execute("SELECT id FROM jurisdictions WHERE name = 'United States'")
-        federal_id = cur.fetchone()[0]
+        result = cur.fetchone()
+        if not result:
+            logger.error("Federal jurisdiction not found")
+            return
+        federal_id = result[0]
 
         # Get AI-generated court directory URLs
         from court_ai_discovery import search_court_directories
         directory_urls = search_court_directories()
 
+        if not directory_urls:
+            logger.warning("No court directory URLs discovered")
+            return
+
         # Add discovered sources
         for url in directory_urls:
-            cur.execute("""
-                INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                VALUES (%s, %s, true)
-                ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                SET is_active = true, last_checked = CURRENT_TIMESTAMP
-            """, (federal_id, url))
+            try:
+                cur.execute("""
+                    INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
+                    VALUES (%s, %s, true)
+                    ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
+                    SET is_active = true, last_checked = CURRENT_TIMESTAMP
+                """, (federal_id, url))
+            except Exception as e:
+                logger.error(f"Error adding court source {url}: {str(e)}")
+                continue
 
-        # Add specific state court websites that don't follow the patterns
+        # Add specific state court websites
         specific_state_courts = [
             ('New York', 'https://www.nycourts.gov'),
             ('California', 'https://www.courts.ca.gov'),
@@ -314,17 +329,22 @@ def initialize_court_sources() -> None:
         ]
 
         for state_name, url in specific_state_courts:
-            cur.execute("""
-                SELECT id FROM jurisdictions WHERE name = %s AND type = 'state'
-            """, (state_name,))
-            state_id = cur.fetchone()
-            if state_id:
+            try:
                 cur.execute("""
-                    INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                    VALUES (%s, %s, true)
-                    ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                    SET is_active = true, last_checked = CURRENT_TIMESTAMP
-                """, (state_id[0], url))
+                    SELECT id FROM jurisdictions WHERE name = %s AND type = 'state'
+                """, (state_name,))
+                result = cur.fetchone()
+                if result:
+                    state_id = result[0]
+                    cur.execute("""
+                        INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
+                        VALUES (%s, %s, true)
+                        ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
+                        SET is_active = true, last_checked = CURRENT_TIMESTAMP
+                    """, (state_id, url))
+            except Exception as e:
+                logger.error(f"Error adding state court source for {state_name}: {str(e)}")
+                continue
 
         conn.commit()
         logger.info("Successfully initialized court sources with AI assistance")
@@ -332,7 +352,6 @@ def initialize_court_sources() -> None:
     except Exception as e:
         logger.error(f"Error initializing court sources: {str(e)}")
         conn.rollback()
-        raise
     finally:
         cur.close()
         conn.close()
@@ -562,7 +581,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             logger.info(f"Processing source {i}/{total_sources}: {url}")
 
             # Update status with jurisdiction details
-            next_source = sources[i-1][4] if i < len(sources) else "Completion" #Corrected index
+            next_source = sources[i-1][4] if i < len(sources) else "Completion"
             update_scraper_status(
                 update_id, i, total_sources,
                 'running',
@@ -780,7 +799,7 @@ def initialize_base_courts() -> None:
                     address = EXCLUDED.address,
                     lat = EXCLUDED.lat,
                     lon = EXCLUDED.lon
-            """, (
+                    """, (
                 f"U.S. Bankruptcy Court for the {district}",
                 url,
                 federal_id,                f"Federal Courthouse, {location}",

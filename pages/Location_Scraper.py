@@ -45,49 +45,58 @@ def get_court_stats():
 
 def get_court_sources():
     """Get all court sources with their status"""
-    conn = get_db_connection()
-    if conn is None:
-        logger.error("Failed to get database connection")
-        return []
-
-    cur = conn.cursor()
     try:
-        cur.execute("""
-            WITH source_stats AS (
+        conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            st.error("Unable to connect to database. Please try again later.")
+            return []
+
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                WITH source_stats AS (
+                    SELECT 
+                        cs.id,
+                        COUNT(c.id) as court_count,
+                        MAX(c.last_updated) as latest_update
+                    FROM court_sources cs
+                    LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
+                    GROUP BY cs.id
+                )
                 SELECT 
                     cs.id,
-                    COUNT(c.id) as court_count,
-                    MAX(c.last_updated) as latest_update
+                    j.name as jurisdiction,
+                    j.type as jurisdiction_type,
+                    cs.source_url,
+                    cs.last_checked,
+                    cs.last_updated,
+                    cs.is_active,
+                    EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
+                    ss.court_count,
+                    ss.latest_update,
+                    j.parent_id
                 FROM court_sources cs
-                LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
-                GROUP BY cs.id
-            )
-            SELECT 
-                cs.id,
-                j.name as jurisdiction,
-                j.type as jurisdiction_type,
-                cs.source_url,
-                cs.last_checked,
-                cs.last_updated,
-                cs.is_active,
-                EXTRACT(EPOCH FROM cs.update_frequency)/3600 as update_hours,
-                ss.court_count,
-                ss.latest_update,
-                j.parent_id
-            FROM court_sources cs
-            JOIN jurisdictions j ON cs.jurisdiction_id = j.id
-            LEFT JOIN source_stats ss ON ss.id = cs.id
-            ORDER BY j.type, j.name, cs.source_url
-        """)
-        return cur.fetchall()
-    except Exception as e:
-        logger.error(f"Error getting court sources: {str(e)}")
-        return []
-    finally:
-        if cur:
+                JOIN jurisdictions j ON cs.jurisdiction_id = j.id
+                LEFT JOIN source_stats ss ON ss.id = cs.id
+                WHERE cs.is_active = true
+                ORDER BY j.type, j.name, cs.source_url;
+            """)
+            sources = cur.fetchall()
+            logger.info(f"Retrieved {len(sources)} active court sources")
+            return sources
+        except Exception as e:
+            logger.error(f"Error querying court sources: {str(e)}")
+            st.error("Error retrieving court sources. Please try again later.")
+            return []
+        finally:
             cur.close()
-        if conn:
-            conn.close()
+            if conn:
+                conn.close()
+    except Exception as e:
+        logger.error(f"Error in get_court_sources: {str(e)}")
+        st.error("An unexpected error occurred. Please try again later.")
+        return []
 
 def format_timestamp(ts):
     """Format timestamp for display"""
