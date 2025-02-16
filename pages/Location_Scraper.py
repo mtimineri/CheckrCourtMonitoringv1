@@ -108,7 +108,7 @@ def get_inventory_status():
             SELECT 
                 id, started_at, completed_at, total_sources,
                 sources_processed, status, message,
-                current_source, next_source, stage
+                current_source, next_source, stage, new_courts_found, courts_updated
             FROM inventory_updates
             WHERE status != 'completed'
             ORDER BY started_at DESC
@@ -126,7 +126,9 @@ def get_inventory_status():
                 'message': status[6] if status[6] else '',
                 'current_source': status[7] if status[7] else 'None',
                 'next_source': status[8] if status[8] else 'None',
-                'stage': status[9] if status[9] else 'Not started'
+                'stage': status[9] if status[9] else 'Not started',
+                'new_courts_found': status[10] if status[10] is not None else 0,
+                'courts_updated': status[11] if status[11] is not None else 0
             }
 
         # If no running status found, get the last completed one
@@ -134,7 +136,7 @@ def get_inventory_status():
             SELECT 
                 id, started_at, completed_at, total_sources,
                 sources_processed, status, message,
-                current_source, next_source, stage
+                current_source, next_source, stage, new_courts_found, courts_updated
             FROM inventory_updates
             ORDER BY started_at DESC
             LIMIT 1
@@ -151,7 +153,9 @@ def get_inventory_status():
                 'message': status[6] if status[6] else '',
                 'current_source': status[7] if status[7] else 'None',
                 'next_source': status[8] if status[8] else 'None',
-                'stage': status[9] if status[9] else 'Not started'
+                'stage': status[9] if status[9] else 'Not started',
+                'new_courts_found': status[10] if status[10] is not None else 0,
+                'courts_updated': status[11] if status[11] is not None else 0
             }
         return None
     except Exception as e:
@@ -268,22 +272,70 @@ if status:
     with col3:
         st.metric("Status", status.get('status', 'Unknown').title())
 
-    # Status details
-    st.subheader("Latest Update Status")
-    status_cols = st.columns(2)
+    # Add additional metrics for better visibility
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("New Courts Found", status.get('new_courts_found', 0))
+        st.metric("Courts Updated", status.get('courts_updated', 0))
 
-    with status_cols[0]:
-        st.markdown(f"**Status:** {status.get('status', 'Unknown').title()}")
-        st.markdown(f"**Started:** {format_timestamp(status.get('start_time'))}")
-        st.markdown(f"**Completed:** {format_timestamp(status.get('end_time'))}")
+    with col2:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # Get the last successful update timestamp
+        cur.execute("""
+            SELECT completed_at 
+            FROM inventory_updates 
+            WHERE status = 'completed' 
+            ORDER BY completed_at DESC 
+            LIMIT 1
+        """)
+        last_update = cur.fetchone()
+        if last_update:
+            st.metric("Last Successful Update", format_timestamp(last_update[0]))
 
-    with status_cols[1]:
-        st.markdown(f"**Current Source:** {status.get('current_source', 'None')}")
-        st.markdown(f"**Next Source:** {status.get('next_source', 'None')}")
-        st.markdown(f"**Stage:** {status.get('stage', 'Not started')}")
+        # Get total courts count
+        cur.execute("SELECT COUNT(*) FROM courts")
+        total_courts = cur.fetchone()[0]
+        st.metric("Total Courts in Database", total_courts)
+        cur.close()
+        conn.close()
 
-        if status.get('message'):
-            st.info(status.get('message'))
+
+    # Update status details section
+    status_details = [
+        ("Status", status.get('status', 'Unknown').title()),
+        ("Started", format_timestamp(status.get('start_time'))),
+        ("Completed", format_timestamp(status.get('end_time'))),
+        ("Current Source", status.get('current_source', 'None')),
+        ("Next Source", status.get('next_source', 'None')),
+        ("Stage", status.get('stage', 'Not started')),
+    ]
+
+    st.subheader("Update Details")
+    for label, value in status_details:
+        st.text(f"{label}: {value}")
+
+    if status.get('message'):
+        st.info(status.get('message'))
+
+    # Add error logs if any
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if status.get('status') == 'error':
+        st.error("Latest Error Logs:")
+        cur.execute("""
+            SELECT timestamp, message 
+            FROM scraper_logs 
+            WHERE scraper_run_id = %s 
+            AND level = 'ERROR'
+            ORDER BY timestamp DESC 
+            LIMIT 5
+        """, (status['id'],))
+        error_logs = cur.fetchall()
+        for timestamp, message in error_logs:
+            st.code(f"{format_timestamp(timestamp)}: {message}")
+    cur.close()
+    conn.close()
 
     # Auto-refresh while update is running
     if status.get('status') == 'running':

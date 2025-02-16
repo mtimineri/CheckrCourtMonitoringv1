@@ -276,82 +276,28 @@ def initialize_jurisdictions() -> None:
         conn.close()
 
 def initialize_court_sources() -> None:
-    """Initialize known court directory sources"""
+    """Initialize known court directory sources with AI assistance"""
     logger.info("Initializing court directory sources...")
     conn = psycopg2.connect(os.environ['DATABASE_URL'])
     cur = conn.cursor()
 
     try:
-        # Federal court sources
-        federal_sources = [
-            {
-                'url': 'https://www.uscourts.gov/court-locator',
-                'description': 'Federal Court Locator'
-            },
-            {
-                'url': 'https://www.supremecourt.gov',
-                'description': 'Supreme Court Website'
-            },
-            {
-                'url': 'https://www.uscourts.gov/about-federal-courts/court-website-links/court-appeals-websites',
-                'description': 'Courts of Appeals Websites'
-            },
-            {
-                'url': 'https://www.uscourts.gov/about-federal-courts/court-website-links/district-court-websites',
-                'description': 'District Court Websites'
-            },
-            {
-                'url': 'https://www.uscourts.gov/about-federal-courts/court-website-links/bankruptcy-court-websites',
-                'description': 'Bankruptcy Court Websites'
-            },
-            {
-                'url': 'https://www.fjc.gov/history/courts',
-                'description': 'Federal Judicial Center Court History'
-            },
-            {
-                'url': 'https://pacer.uscourts.gov/court-links',
-                'description': 'PACER Court Links'
-            }
-        ]
-
         # Get federal jurisdiction ID
         cur.execute("SELECT id FROM jurisdictions WHERE name = 'United States'")
         federal_id = cur.fetchone()[0]
 
-        # Insert federal sources
-        for source in federal_sources:
+        # Get AI-generated court directory URLs
+        from court_ai_discovery import search_court_directories
+        directory_urls = search_court_directories()
+
+        # Add discovered sources
+        for url in directory_urls:
             cur.execute("""
                 INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
                 VALUES (%s, %s, true)
                 ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
                 SET is_active = true, last_checked = CURRENT_TIMESTAMP
-            """, (federal_id, source['url']))
-
-        # State court sources - expanded patterns
-        cur.execute("SELECT id, name FROM jurisdictions WHERE type = 'state'")
-        states = cur.fetchall()
-
-        state_patterns = [
-            ('https://www.{state}courts.gov', 'State Courts Portal'),
-            ('https://www.{state}.gov/courts', 'State Government Courts Page'),
-            ('https://www.{state}judiciary.gov', 'State Judiciary Website'),
-            ('https://courts.{state}.gov', 'State Courts Website'),
-            ('https://www.{state}courts.us', 'State Courts US Portal'),
-            ('https://www.{state}.uscourts.gov', 'Federal Courts in State'),
-            ('https://www.court.{state}.gov', 'State Court Portal'),
-            ('https://www.{state}supremecourt.gov', 'State Supreme Court')
-        ]
-
-        for state_id, state_name in states:
-            state_slug = state_name.lower().replace(' ', '')
-            for pattern, desc in state_patterns:
-                url = pattern.format(state=state_slug)
-                cur.execute("""
-                    INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                    VALUES (%s, %s, true)
-                    ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                    SET is_active = true, last_checked = CURRENT_TIMESTAMP
-                """, (state_id, url))
+            """, (federal_id, url))
 
         # Add specific state court websites that don't follow the patterns
         specific_state_courts = [
@@ -381,7 +327,7 @@ def initialize_court_sources() -> None:
                 """, (state_id[0], url))
 
         conn.commit()
-        logger.info("Successfully initialized court sources")
+        logger.info("Successfully initialized court sources with AI assistance")
 
     except Exception as e:
         logger.error(f"Error initializing court sources: {str(e)}")
@@ -482,29 +428,10 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
         return []
 
 def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tuple[int, int]:
-    """Process a single court source and extract court information"""
+    """Process a single court source using AI-powered discovery"""
     try:
-        downloaded = trafilatura.fetch_url(url)
-        if not downloaded:
-            logger.warning(f"Failed to download content from {url}")
-            return 0, 0
-
-        # Extract courts from the main page
-        courts = extract_courts_from_page(downloaded, url)
-
-        # Also check for "Find a Court" or similar pages
-        soup = BeautifulSoup(downloaded, 'html.parser')
-        for link in soup.find_all('a'):
-            link_text = link.get_text().lower()
-            if any(term in link_text for term in ['find', 'search', 'directory', 'locations']):
-                sub_url = urljoin(url, link.get('href', ''))
-                sub_content = trafilatura.fetch_url(sub_url)
-                if sub_content:
-                    additional_courts = extract_courts_from_page(sub_content, sub_url)
-                    # Add only new courts
-                    for court in additional_courts:
-                        if not any(c['name'] == court['name'] for c in courts):
-                            courts.append(court)
+        from court_ai_discovery import process_court_page
+        courts = process_court_page(url)
 
         conn = psycopg2.connect(os.environ['DATABASE_URL'])
         cur = conn.cursor()
@@ -513,16 +440,30 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tupl
         updated_courts = 0
 
         for court in courts:
+            if not court.get('verified', False) or court.get('confidence', 0) < 0.7:
+                continue
+
             cur.execute("""
-                INSERT INTO courts (name, type, url, jurisdiction_id, status)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO courts (
+                    name, type, url, jurisdiction_id, status, 
+                    address, last_updated
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (name) DO UPDATE
                 SET type = EXCLUDED.type,
                     url = EXCLUDED.url,
                     status = EXCLUDED.status,
+                    address = EXCLUDED.address,
                     last_updated = CURRENT_TIMESTAMP
                 RETURNING (xmax = 0) as is_insert
-            """, (court['name'], court['type'], court['url'], jurisdiction_id, court.get('status', 'Unknown')))
+            """, (
+                court['name'],
+                court['type'],
+                court.get('url'),
+                jurisdiction_id,
+                court.get('status', 'Unknown'),
+                court.get('address')
+            ))
 
             is_insert = cur.fetchone()[0]
             if is_insert:
