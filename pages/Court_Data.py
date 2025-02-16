@@ -122,8 +122,8 @@ else:
             'Limited Operations': '#ffc107'  # Yellow
         }
 
-        # Ensure status colors are applied correctly
-        fig = px.scatter_mapbox(
+        # Create map using updated scatter_map
+        fig = px.scatter_map(
             courts_with_coords,
             lat='lat',
             lon='lon',

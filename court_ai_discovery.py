@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 import re
 import urllib3
 import psycopg2
+import time
 from court_data import get_db_connection
 
 # Disable SSL verification warnings
@@ -18,8 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client
-# the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
-# do not change this unless explicitly requested by the user
+# Note: We're using gpt-4o-mini as it's more efficient for this task
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def initialize_ai_discovery():
@@ -34,7 +34,7 @@ def initialize_ai_discovery():
         # Test OpenAI API with a simple prompt
         try:
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",  
                 messages=[
                     {"role": "user", "content": "Test connection"}
                 ]
@@ -88,7 +88,7 @@ Rules:
             # Clean and validate URLs
             valid_urls = []
             for url in urls:
-                if isinstance(url, str):  # Ensure URL is a string
+                if isinstance(url, str):  
                     cleaned_url = clean_and_validate_url(url)
                     if cleaned_url:
                         valid_urls.append(cleaned_url)
@@ -118,90 +118,111 @@ Rules:
         return []
 
 def store_discovered_court(court_data: Dict) -> bool:
-    """Store discovered court in the database"""
+    """Store discovered court in the database with improved error handling and connection management"""
+    conn = None
     try:
-        conn = get_db_connection()
-        if not conn:
-            logger.error("Failed to get database connection")
+        if not court_data.get('name') or not court_data.get('jurisdiction'):
+            logger.error("Cannot store court without name and jurisdiction")
             return False
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = get_db_connection()
+                if conn is None:
+                    logger.error(f"Failed to get database connection (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(2)  # Wait before retry
+                        continue
+                    return False
+                break
+            except Exception as e:
+                logger.error(f"Database connection error (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                return False
 
         cur = conn.cursor()
         try:
-            # Check if court already exists
+            # Get or create jurisdiction first
+            jurisdiction_name = court_data.get('jurisdiction', 'Federal')
+            jurisdiction_type = court_data.get('jurisdiction_type', 'federal')
+
+            logger.info(f"Creating/updating jurisdiction: {jurisdiction_name} ({jurisdiction_type})")
             cur.execute("""
-                SELECT id FROM courts 
-                WHERE name = %s AND jurisdiction_id = (
-                    SELECT id FROM jurisdictions WHERE name = %s
-                )
-            """, (court_data['name'], court_data.get('jurisdiction', 'Federal')))
+                INSERT INTO jurisdictions (name, type)
+                VALUES (%s, %s)
+                ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type
+                RETURNING id
+            """, (jurisdiction_name, jurisdiction_type))
 
-            existing_court = cur.fetchone()
+            jurisdiction_id = cur.fetchone()
+            if not jurisdiction_id:
+                logger.error(f"Failed to get jurisdiction ID for {jurisdiction_name}")
+                conn.rollback()
+                return False
 
-            if existing_court:
-                # Update existing court
-                cur.execute("""
-                    UPDATE courts 
-                    SET type = %s,
-                        status = %s,
-                        address = %s,
-                        last_updated = CURRENT_TIMESTAMP,
-                        contact_info = %s
-                    WHERE id = %s
-                """, (
-                    court_data['type'],
-                    court_data['status'],
-                    court_data.get('address'),
-                    json.dumps(court_data.get('contact_info', {})),
-                    existing_court[0]
-                ))
-                logger.info(f"Updated existing court: {court_data['name']}")
-            else:
-                # Get or create jurisdiction
-                jurisdiction_type = 'federal' if 'Federal' in court_data['type'] else 'state'
-                cur.execute("""
-                    INSERT INTO jurisdictions (name, type)
-                    VALUES (%s, %s)
-                    ON CONFLICT (name) DO UPDATE SET type = EXCLUDED.type
-                    RETURNING id
-                """, (court_data.get('jurisdiction', 'Federal'), jurisdiction_type))
+            jurisdiction_id = jurisdiction_id[0]
 
-                jurisdiction_id = cur.fetchone()[0]
+            # Insert or update court with jurisdiction
+            cur.execute("""
+                INSERT INTO courts (
+                    name, type, status, jurisdiction_id, 
+                    address, contact_info, last_updated
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, CURRENT_TIMESTAMP)
+                ON CONFLICT (name, jurisdiction_id) DO UPDATE SET
+                    type = EXCLUDED.type,
+                    status = EXCLUDED.status,
+                    address = EXCLUDED.address,
+                    contact_info = EXCLUDED.contact_info,
+                    last_updated = CURRENT_TIMESTAMP
+                RETURNING id
+            """, (
+                court_data['name'],
+                court_data.get('type'),
+                court_data.get('status'),
+                jurisdiction_id,
+                court_data.get('address'),
+                json.dumps(court_data.get('contact_info', {}))
+            ))
 
-                # Insert new court
-                cur.execute("""
-                    INSERT INTO courts (
-                        name, type, status, jurisdiction_id, 
-                        address, contact_info, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                """, (
-                    court_data['name'],
-                    court_data['type'],
-                    court_data['status'],
-                    jurisdiction_id,
-                    court_data.get('address'),
-                    json.dumps(court_data.get('contact_info', {}))
-                ))
-                logger.info(f"Inserted new court: {court_data['name']}")
+            court_id = cur.fetchone()
+            if not court_id:
+                logger.error(f"Failed to insert/update court {court_data['name']}")
+                conn.rollback()
+                return False
 
             conn.commit()
+            logger.info(f"Successfully stored/updated court: {court_data['name']} in jurisdiction: {jurisdiction_name}")
             return True
 
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Database error storing court {court_data['name']}: {str(e)}")
+        except psycopg2.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Database error storing court {court_data.get('name', 'Unknown')}: {str(e)}", exc_info=True)
             return False
         finally:
-            cur.close()
-            conn.close()
+            if cur:
+                cur.close()
 
     except Exception as e:
-        logger.error(f"Error storing court data: {str(e)}")
+        logger.error(f"Error storing court data: {str(e)}", exc_info=True)
         return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+                logger.debug("Database connection closed successfully")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {str(e)}")
+
+    return False
 
 def validate_url(url: str) -> bool:
     """Validate URL format and accessibility"""
     try:
-        # Clean up the URL - remove spaces and parenthetical text
+        # Clean up the URL
         cleaned_url = url.split('(')[0].strip()
         if not cleaned_url.startswith(('http://', 'https://')):
             cleaned_url = 'https://' + cleaned_url
@@ -211,13 +232,22 @@ def validate_url(url: str) -> bool:
             logger.warning(f"Invalid URL format: {url}")
             return False
 
-        # Test URL accessibility with SSL verification disabled
-        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
-        if not downloaded:
-            logger.warning(f"Unable to access URL: {cleaned_url}")
-            return False
+        # Test URL accessibility with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                downloaded = trafilatura.fetch_url(cleaned_url)
+                if downloaded:
+                    return True
+                logger.warning(f"Attempt {attempt + 1}: Unable to access URL: {cleaned_url}")
+                time.sleep(2)  # Wait before retry
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {cleaned_url}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                continue
 
-        return True
+        return False
     except Exception as e:
         logger.error(f"Error validating URL {url}: {str(e)}")
         return False
@@ -253,7 +283,7 @@ def process_court_page(url: str) -> List[Dict]:
             return []
 
         logger.info(f"Fetching content from {cleaned_url}")
-        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
             return []
@@ -263,24 +293,29 @@ def process_court_page(url: str) -> List[Dict]:
             logger.warning(f"No content extracted from {cleaned_url}")
             return []
 
-        logger.info(f"Successfully extracted content from {cleaned_url}")
+        logger.info(f"Successfully extracted content from {cleaned_url}, content length: {len(content)}")
         courts = discover_courts_from_content(content, cleaned_url)
+        logger.info(f"Discovered {len(courts)} potential courts from content")
 
         # Verify each court before returning
         verified_courts = []
         for court in courts:
-            verified_court = verify_court_info(court)
-            if verified_court.get('verified', False):
-                verified_courts.append(verified_court)
-                logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
-            else:
-                logger.warning(f"Court verification failed: {court.get('name', 'Unknown')}")
+            try:
+                verified_court = verify_court_info(court)
+                if verified_court.get('verified', False):
+                    verified_courts.append(verified_court)
+                    logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
+                else:
+                    logger.warning(f"Court verification failed for {court.get('name', 'Unknown')}: {verified_court.get('message', 'Unknown reason')}")
+            except Exception as e:
+                logger.error(f"Error verifying court {court.get('name', 'Unknown')}: {str(e)}")
+                continue
 
         logger.info(f"Found {len(verified_courts)} verified courts from {cleaned_url}")
         return verified_courts
 
     except Exception as e:
-        logger.error(f"Error processing court page {url}: {str(e)}")
+        logger.error(f"Error processing court page {url}: {str(e)}", exc_info=True)
         return []
 
 def verify_court_info(court_data: Dict) -> Dict:
@@ -295,6 +330,7 @@ def verify_court_info(court_data: Dict) -> Dict:
 4. Validate or enhance the address
 5. Determine operating status
 6. Validate contact information
+7. Ensure the jurisdiction information is complete and accurate
 
 Respond with a JSON object containing:
 {
@@ -303,22 +339,23 @@ Respond with a JSON object containing:
     "type": string,
     "status": string,
     "address": string or null,
+    "jurisdiction": string,
+    "jurisdiction_type": string,
     "contact_info": {
         "phone": string or null,
         "email": string or null,
         "hours": string or null
-    }
+    },
+    "message": string
 }"""
-
-        user_prompt = f"Verify this court information:\n{json.dumps(court_data, indent=2)}"
 
         try:
             logger.info("Making OpenAI API call for court verification")
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",  
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": f"Verify this court information:\n{json.dumps(court_data, indent=2)}"}
                 ],
                 response_format={"type": "json_object"}
             )
@@ -333,7 +370,10 @@ Respond with a JSON object containing:
                 'type': result['type'],
                 'status': result['status'],
                 'address': result['address'],
+                'jurisdiction': result['jurisdiction'],
+                'jurisdiction_type': result['jurisdiction_type'],
                 'contact_info': result.get('contact_info', {}),
+                'message': result.get('message')
             })
 
             logger.info(f"Court verification completed with confidence: {result['confidence']}")
@@ -356,22 +396,23 @@ def discover_courts_from_content(content: str, base_url: str) -> List[Dict]:
 
         logger.info(f"Starting AI discovery for content from {base_url}")
 
-        system_prompt = """As a court information extraction expert, analyze the provided webpage content and identify all courts mentioned. Extract:
+        system_prompt = """As a court information extraction expert, analyze the provided webpage content and identify all courts mentioned. Include jurisdiction details and unique identifiers. Extract:
 
-1. Court names and types (be specific about jurisdiction level)
+1. Court names (be specific and include state/district/circuit if mentioned)
 2. Jurisdictional information (federal, state, county, municipal, or tribal)
 3. Physical locations and addresses
-4. Contact information (phone, email)
+4. Contact information
 5. Operating status and hours
 6. URLs for each court
-7. Any special divisions or departments
-8. Additional services provided
+7. Special divisions or departments
+8. Additional services
 
 For each court found, create a JSON object with:
 {
-    "name": string,
+    "name": string (full official name including jurisdiction),
     "type": string,
-    "jurisdiction": string,
+    "jurisdiction": string (specific jurisdiction name),
+    "jurisdiction_type": string (federal/state/county/municipal/tribal),
     "address": string or null,
     "url": string or null,
     "status": string,
@@ -392,10 +433,10 @@ Return a JSON object with an array of courts:
         try:
             logger.info("Making OpenAI API call for court discovery")
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",  
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Extract court information from this webpage content:\n{content[:8000]}"}  # Limit content length
+                    {"role": "user", "content": f"Extract court information from this webpage content:\n{content[:8000]}"}
                 ],
                 response_format={"type": "json_object"}
             )
@@ -423,3 +464,67 @@ Return a JSON object with an array of courts:
     except Exception as e:
         logger.error(f"Error discovering courts: {str(e)}")
         return []
+
+def test_discovery_process():
+    """Test the entire discovery process end-to-end with improved error handling"""
+    try:
+        logger.info("Starting discovery process test")
+
+        # Initialize AI
+        if not initialize_ai_discovery():
+            logger.error("Failed to initialize AI discovery")
+            return False
+
+        # Get URLs with timeout
+        urls = search_court_directories()
+        logger.info(f"Found {len(urls)} court directory URLs")
+
+        total_courts_found = 0
+        total_courts_stored = 0
+        failed_courts = []
+
+        # Process all URLs
+        for url in urls:
+            logger.info(f"\nProcessing URL: {url}")
+            try:
+                # Add timeout to prevent hanging
+                with urllib3.Timeout(connect=10, read=30):
+                    courts = process_court_page(url)
+
+                if courts:
+                    logger.info(f"Found {len(courts)} courts from {url}")
+                    total_courts_found += len(courts)
+
+                    for court in courts:
+                        try:
+                            if store_discovered_court(court):
+                                total_courts_stored += 1
+                            else:
+                                failed_courts.append(court.get('name', 'Unknown'))
+                                logger.warning(f"Failed to store court: {court.get('name', 'Unknown')}")
+                        except Exception as e:
+                            failed_courts.append(court.get('name', 'Unknown'))
+                            logger.error(f"Error storing court {court.get('name', 'Unknown')}: {str(e)}")
+                            continue
+
+                # Add a small delay between requests
+                time.sleep(2)
+
+            except urllib3.exceptions.TimeoutError:
+                logger.error(f"Timeout processing URL {url}")
+                continue
+            except Exception as e:
+                logger.error(f"Error processing URL {url}: {str(e)}", exc_info=True)
+                continue
+
+        logger.info(f"\nTest Results:")
+        logger.info(f"Total courts found: {total_courts_found}")
+        logger.info(f"Total courts stored: {total_courts_stored}")
+        if failed_courts:
+            logger.warning(f"Failed to store {len(failed_courts)} courts: {', '.join(failed_courts)}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error in discovery process test: {str(e)}", exc_info=True)
+        return False

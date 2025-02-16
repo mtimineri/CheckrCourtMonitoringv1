@@ -13,9 +13,9 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Initialize connection pool
-min_connections = 1
-max_connections = 20
+# Update connection pool parameters
+min_connections = 5  # Increased from 1
+max_connections = 50  # Increased from 20
 connection_pool = None
 
 def init_connection_pool():
@@ -26,7 +26,7 @@ def init_connection_pool():
         url = urlparse(os.environ['DATABASE_URL'])
         logger.info("Initializing database connection pool...")
 
-        # Create connection pool
+        # Create connection pool with increased capacity
         connection_pool = pool.SimpleConnectionPool(
             min_connections,
             max_connections,
@@ -45,6 +45,7 @@ def init_connection_pool():
                 cur.execute('SELECT 1')
                 cur.close()
                 logger.info("Database connection pool initialized and validated successfully")
+                logger.info(f"Connection pool size: min={min_connections}, max={max_connections}")
             finally:
                 connection_pool.putconn(test_conn)
         return True
@@ -63,7 +64,7 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
             logger.error("Failed to initialize connection pool")
             return None
 
-    # Try to get a connection
+    # Try to get a connection with retries
     for attempt in range(max_retries):
         try:
             conn = connection_pool.getconn()
@@ -72,7 +73,7 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
                 cur = conn.cursor()
                 cur.execute('SELECT 1')
                 cur.close()
-                logger.info("Successfully acquired database connection")
+                logger.debug(f"Successfully acquired database connection (attempt {attempt + 1})")
                 return conn
             else:
                 # Return bad connection to pool and retry
@@ -81,10 +82,20 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
                         connection_pool.putconn(conn)
                     except Exception as e:
                         logger.error(f"Error returning connection to pool: {str(e)}")
+
+                # Add a small delay before retry
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        except pool.PoolError as e:
+            logger.error(f"Connection pool error (attempt {attempt + 1}): {str(e)}")
+            # If pool is exhausted, wait longer before retry
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * 2)
+                continue
         except Exception as e:
             logger.error(f"Connection attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 continue
             else:
@@ -93,10 +104,21 @@ def get_db_connection(max_retries: int = 3, retry_delay: int = 1) -> Optional[ps
     return None
 
 def return_db_connection(conn):
-    """Return a connection to the pool"""
-    if connection_pool and conn and not conn.closed:
+    """Return a connection to the pool with improved error handling"""
+    if connection_pool and conn:
         try:
-            connection_pool.putconn(conn)
+            if not conn.closed:
+                # Rollback any uncommitted changes before returning
+                try:
+                    conn.rollback()
+                except Exception as e:
+                    logger.warning(f"Error rolling back connection: {str(e)}")
+
+                # Return to pool
+                connection_pool.putconn(conn)
+                logger.debug("Successfully returned connection to pool")
+            else:
+                logger.warning("Attempted to return closed connection to pool")
         except Exception as e:
             logger.error(f"Error returning connection to pool: {str(e)}")
             try:
