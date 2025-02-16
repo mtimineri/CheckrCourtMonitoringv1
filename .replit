@@ -19,10 +19,6 @@ author = "agent"
 task = "workflow.run"
 args = "Streamlit App"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Court System"
-
 [[workflows.workflow]]
 name = "Streamlit App"
 author = "agent"
@@ -37,20 +33,6 @@ task = "packager.installForAll"
 task = "shell.exec"
 args = "streamlit run Court_Map.py"
 waitForPort = 5000
-
-[[workflows.workflow]]
-name = "Court System"
-author = "agent"
-
-[workflows.workflow.metadata]
-agentRequireRestartOnSave = false
-
-[[workflows.workflow.tasks]]
-task = "packager.installForAll"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python court_inventory.py && python -c 'from court_scraper import scrape_courts, update_database; courts_data = scrape_courts(); update_database(courts_data)'"
 
 [[ports]]
 localPort = 5000
