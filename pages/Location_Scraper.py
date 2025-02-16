@@ -42,33 +42,44 @@ with col1:
         key="update_type_select"
     )
 
-    if st.button("Update Court Inventory Now", key="update_inventory_button"):
+    def start_update_process(update_type):
+        """Start the court inventory update process"""
         try:
-            st.info(f"Starting court inventory update for {update_type}...")
+            logger.info(f"Starting court inventory update for {update_type}")
 
             # Convert update type to expected format
             court_type = update_type.lower().split()[0]
 
             # Start the update process
             result = update_court_inventory(court_type=court_type)
+            logger.info(f"Update process result: {result}")
 
             if result and isinstance(result, dict):
                 if result.get('status') == 'completed':
                     st.success(f"Update completed: Found {result.get('new_courts', 0)} new courts, updated {result.get('updated_courts', 0)} existing courts")
                 elif result.get('status') == 'error':
                     st.error(f"Error during update: {result.get('message', 'Unknown error occurred')}")
+                    logger.error(f"Update process error: {result.get('message')}")
                 else:
                     st.info("Update process started. Monitoring progress...")
+                    logger.info("Update process initiated successfully")
 
                 # Force refresh of status
                 st.session_state.update_status = None
                 st.rerun()
             else:
-                st.error("Invalid response from update process")
+                error_msg = "Invalid response from update process"
+                logger.error(error_msg)
+                st.error(error_msg)
 
         except Exception as e:
-            logger.error(f"Error in court discovery: {str(e)}", exc_info=True)
-            st.error(f"Error updating inventory: {str(e)}")
+            error_msg = f"Error updating inventory: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            st.error(error_msg)
+
+    if st.button("Update Court Inventory Now", key="update_inventory_button"):
+        start_update_process(update_type)
+
 
 # Get and display current update status
 def get_inventory_status():
@@ -243,6 +254,7 @@ if stats:
         use_container_width=True,
         hide_index=True
     )
+
 
 
 def get_court_sources():

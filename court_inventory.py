@@ -801,8 +801,7 @@ def initialize_base_courts() -> None:
                 ) VALUES (
                     %s,
                     'Bankruptcy Courts',
-                    %s,
-                    %s,
+                    `%s,
                     'Open',
                     %s,
                     'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
@@ -919,20 +918,18 @@ def return_db_connection(conn):
     except Exception as e:
         logger.error(f"Error closing database connection: {str(e)}")
 
-def update_scraper_status(update_id: int, sources_processed: int, total_sources: int,
-                         status: str, message: str, current_source: str = None,
-                         next_source: str = None, stage: str = None) -> None:
-    """Update the status of an inventory update run"""
+def update_scraper_status(update_id, sources_processed, total_sources, status, message, current_source=None, next_source=None, stage=None):
+    """Update the status of a scraper run"""
+    logger.info(f"Updating scraper status: {message}")
     conn = get_db_connection()
     if not conn:
-        logger.error("Failed to get database connection for status update")
+        logger.error("Failed to get database connection")
         return
 
     cur = conn.cursor()
     try:
-        # Update the inventory update record
         cur.execute("""
-            UPDATE inventory_updates
+            UPDATE inventory_updates 
             SET sources_processed = %s,
                 total_sources = %s,
                 status = %s,
@@ -940,29 +937,15 @@ def update_scraper_status(update_id: int, sources_processed: int, total_sources:
                 current_source = %s,
                 next_source = %s,
                 stage = %s,
-                completed_at = CASE 
-                    WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP 
-                    ELSE completed_at 
-                END
+                completed_at = CASE WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP ELSE completed_at END
             WHERE id = %s
         """, (
             sources_processed, total_sources, status, message,
-            current_source, next_source, stage, status, update_id
+            current_source, next_source, stage,
+            status, update_id
         ))
-
-        # Add a log entry
-        cur.execute("""
-            INSERT INTO scraper_logs (
-                scraper_run_id, level, message
-            ) VALUES (%s, %s, %s)
-        """, (
-            update_id,
-            'INFO' if status != 'error' else 'ERROR',
-            message
-        ))
-
         conn.commit()
-        logger.info(f"Updated scraper status: {message}")
+        logger.info("Successfully updated scraper status")
 
     except Exception as e:
         logger.error(f"Error updating scraper status: {str(e)}")
@@ -971,33 +954,27 @@ def update_scraper_status(update_id: int, sources_processed: int, total_sources:
         cur.close()
         conn.close()
 
-def initialize_inventory_run() -> Optional[int]:
+def initialize_inventory_run():
     """Initialize a new inventory update run"""
+    logger.info("Initializing new inventory update run")
     conn = get_db_connection()
     if not conn:
+        logger.error("Failed to get database connection")
         return None
 
     cur = conn.cursor()
     try:
-        # Insert new run record
+        # Create new inventory update record
         cur.execute("""
-            INSERT INTO inventory_updates (
-                started_at,
-                status,
-                total_sources,
-                sources_processed,
-                new_courts_found,
-                courts_updated,
-                stage
-            ) VALUES (
-                CURRENT_TIMESTAMP,
-                'running',
-                0, 0, 0, 0,
-                'Initializing'
-            ) RETURNING id
+            INSERT INTO inventory_updates 
+                (started_at, status, stage, total_sources, sources_processed)
+            VALUES 
+                (CURRENT_TIMESTAMP, 'running', 'Initializing', 0, 0)
+            RETURNING id
         """)
         update_id = cur.fetchone()[0]
         conn.commit()
+        logger.info(f"Created new inventory update run with ID: {update_id}")
         return update_id
 
     except Exception as e:
