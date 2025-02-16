@@ -394,7 +394,6 @@ if sources:
             'Last Updated': format_timestamp(source[5]),
             'Status': 'Active' if source[6] else 'Inactive',
             'Update Frequency': f"{source[7]:.1f} hours",
-            'Courts Tracked': source[8] or 0,
             'Latest Court Update': format_timestamp(source[9])
         })
 
@@ -402,6 +401,21 @@ if sources:
 
     # Add summary metrics before filters
     total_sources = len(source_df)
+
+    # Get the actual count of courts from the courts table
+    conn = get_db_connection()
+    total_courts = 0
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM courts")
+            total_courts = cur.fetchone()[0]
+            cur.close()
+        except Exception as e:
+            logger.error(f"Error getting court count: {str(e)}")
+        finally:
+            conn.close()
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total Directory Sources", f"{total_sources:,}")
@@ -409,8 +423,7 @@ if sources:
         active_sources = len(source_df[source_df['Status'] == 'Active'])
         st.metric("Active Sources", f"{active_sources:,}")
     with col3:
-        total_courts = source_df['Courts Tracked'].sum()
-        st.metric("Total Courts Tracked", f"{total_courts:,}")
+        st.metric("Total Courts in Database", f"{total_courts:,}")
 
     # Add filters
     col1, col2 = st.columns([2, 1])
