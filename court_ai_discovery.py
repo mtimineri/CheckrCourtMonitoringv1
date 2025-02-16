@@ -284,79 +284,64 @@ def process_court_page(url: str) -> List[Dict]:
         return []
 
 def verify_court_info(court_data: Dict) -> Dict:
-    """
-    Use OpenAI to verify and enrich court information
-    """
+    """Use OpenAI to verify and enrich court information"""
     try:
+        logger.info(f"Starting court verification for: {court_data.get('name', 'Unknown Court')}")
+
         system_prompt = """You are a court information verification expert. Analyze the provided court information and:
 1. Verify if this appears to be a legitimate court
-2. Classify the court type into one of these categories:
-   - Supreme Court
-   - Courts of Appeals
-   - District Courts
-   - Bankruptcy Courts
-   - Specialized Federal Courts
-   - State Supreme Courts
-   - State Appellate Courts
-   - State Trial Courts
-   - State Specialized Courts
-   - County Superior Courts
-   - County Circuit Courts
-   - County District Courts
-   - County Family Courts
-   - County Probate Courts
-   - County Criminal Courts
-   - County Civil Courts
-   - County Juvenile Courts
-   - County Small Claims Courts
-   - Municipal Courts
-   - Tribal Courts
-   - Administrative Courts
+2. Classify the court type accurately
 3. Provide a confidence score (0-1)
-4. Extract or validate the court's address
-5. Determine operating status: Open, Closed, or Limited Operations
-6. Extract contact information and operating hours if available
+4. Validate or enhance the address
+5. Determine operating status
+6. Validate contact information
 
 Respond with a JSON object containing:
 {
     "verified": boolean,
     "confidence": float,
-    "court_type": string,
+    "type": string,
     "status": string,
     "address": string or null,
     "contact_info": {
         "phone": string or null,
         "email": string or null,
         "hours": string or null
-    },
-    "additional_info": string or null
+    }
 }"""
 
         user_prompt = f"Verify this court information:\n{json.dumps(court_data, indent=2)}"
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
+        try:
+            logger.info("Making OpenAI API call for court verification")
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            logger.info("Successfully received OpenAI API response for verification")
 
-        result = json.loads(response.choices[0].message.content)
+            result = json.loads(response.choices[0].message.content)
 
-        # Update court data with verified information
-        court_data.update({
-            'verified': result['verified'],
-            'confidence': result['confidence'],
-            'type': result['court_type'],
-            'status': result['status'],
-            'address': result['address'],
-            'contact_info': result.get('contact_info', {}),
-            'additional_info': result.get('additional_info')
-        })
+            # Update court data with verified information
+            court_data.update({
+                'verified': result['verified'],
+                'confidence': result['confidence'],
+                'type': result['type'],
+                'status': result['status'],
+                'address': result['address'],
+                'contact_info': result.get('contact_info', {}),
+            })
 
-        return court_data
+            logger.info(f"Court verification completed with confidence: {result['confidence']}")
+            return court_data
+
+        except Exception as e:
+            logger.error(f"Error in OpenAI API call during verification: {str(e)}")
+            return court_data
 
     except Exception as e:
         logger.error(f"Error verifying court info: {str(e)}")
@@ -368,6 +353,8 @@ def discover_courts_from_content(content: str, base_url: str) -> List[Dict]:
         if not content.strip():
             logger.warning("Empty content provided for court discovery")
             return []
+
+        logger.info(f"Starting AI discovery for content from {base_url}")
 
         system_prompt = """As a court information extraction expert, analyze the provided webpage content and identify all courts mentioned. Extract:
 
@@ -403,14 +390,16 @@ Return a JSON object with an array of courts:
 }"""
 
         try:
+            logger.info("Making OpenAI API call for court discovery")
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Extract court information from this webpage content:\n{content}"}
+                    {"role": "user", "content": f"Extract court information from this webpage content:\n{content[:8000]}"}  # Limit content length
                 ],
                 response_format={"type": "json_object"}
             )
+            logger.info("Successfully received OpenAI API response")
 
             result = json.loads(response.choices[0].message.content)
             courts = result.get('courts', [])
