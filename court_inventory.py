@@ -791,7 +791,7 @@ def initialize_base_courts() -> None:
             ("Northern District of California", "San Francisco, CA", 37.7749, -122.4194),
             ("Southern District of Florida", "Miami, FL", 25.7617, -80.1918),
             ("Eastern District of Texas", "Tyler, TX", 32.3513, -95.3011),
-            ("District of Massachusetts", "Boston, MA", 42.3601, -71.0589)
+            ("District of Massachusetts", "Boston, MA", 42.3601, -710589)
         ]
 
         for name, location, lat, lon in district_courts:
@@ -961,41 +961,65 @@ def return_db_connection(conn):
     except Exception as e:
         logger.error(f"Error closing database connection: {str(e)}")
 
-def update_scraper_status(update_id, sources_processed, total_sources, status, message, current_source=None, next_source=None, stage=None):
-    """Update the status of a scraper run"""
-    logger.info(f"Updating scraper status: {message}")
-    conn = get_db_connection()
-    if not conn:
-        logger.error("Failed to get database connection")
-        return
-
-    cur = conn.cursor()
+def update_scraper_status(
+    update_id: int,
+    sources_processed: int,
+    total_sources: int,
+    status: str,
+    message: str,
+    current_source: Optional[str] = None,
+    next_source: Optional[str] = None,
+    stage: Optional[str] = None
+) -> None:
+    """Update the status of the current scraper run"""
     try:
-        cur.execute("""
-            UPDATE inventory_updates 
-            SET sources_processed = %s,
-                total_sources = %s,
-                status = %s,
-                message = %s,
-                current_source = %s,
-                next_source = %s,
-                stage = %s,
-                completed_at = CASE WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP ELSE completed_at END
-            WHERE id = %s
-        """, (
-            sources_processed, total_sources, status, message,
-            current_source, next_source, stage,
-            status, update_id
-        ))
-        conn.commit()
-        logger.info("Successfully updated scraper status")
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection for status update")
+            return
+
+        cur = conn.cursor()
+        try:
+            # Calculate completion percentage
+            completion_percentage = (sources_processed / total_sources * 100) if total_sources > 0 else 0
+
+            cur.execute("""
+                UPDATE inventory_updates
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_source = %s,
+                    next_source = %s,
+                    stage = %s,
+                    completed_at = CASE 
+                        WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP
+                        ELSE completed_at
+                    END
+                WHERE id = %s
+            """, (
+                sources_processed,
+                total_sources,
+                status,
+                f"{message} ({completion_percentage:.1f}% complete)",
+                current_source,
+                next_source,
+                stage,
+                status,
+                update_id
+            ))
+            conn.commit()
+            logger.info(f"Successfully updated scraper status: {message}")
+
+        except Exception as e:
+            logger.error(f"Error updating scraper status: {str(e)}")
+            conn.rollback()
+        finally:
+            cur.close()
+            conn.close()
 
     except Exception as e:
         logger.error(f"Error updating scraper status: {str(e)}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
 
 def initialize_inventory_run():
     """Initialize a new inventory update run"""

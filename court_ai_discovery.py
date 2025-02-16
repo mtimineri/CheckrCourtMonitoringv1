@@ -185,7 +185,7 @@ def validate_url(url: str) -> bool:
             return False
 
         # Test URL accessibility with SSL verification disabled
-        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
         if not downloaded:
             logger.warning(f"Unable to access URL: {cleaned_url}")
             return False
@@ -226,7 +226,7 @@ def process_court_page(url: str) -> List[Dict]:
             return []
 
         logger.info(f"Fetching content from {cleaned_url}")
-        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
             return []
@@ -254,74 +254,6 @@ def process_court_page(url: str) -> List[Dict]:
 
     except Exception as e:
         logger.error(f"Error processing court page {url}: {str(e)}")
-        return []
-
-def search_court_directories() -> List[str]:
-    """Use OpenAI to generate a list of potential court directory URLs"""
-    try:
-        system_prompt = """You are a court information specialist. Generate a list of valid, accessible court directory URLs for the United States. Return ONLY an array of direct URLs in JSON format, like this:
-{
-    "urls": [
-        "https://www.uscourts.gov",
-        "https://www.supremecourt.gov"
-    ]
-}
-
-Focus on:
-1. Main federal court websites
-2. State supreme court websites
-3. Major district court portals
-4. Bankruptcy court directories
-
-Rules:
-1. Use only .gov or .us domains when possible
-2. Ensure URLs are direct links (no search pages)
-3. Include only base domains, no query parameters
-4. No parenthetical text or spaces in URLs"""
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": "Generate a list of valid US court directory URLs"}
-                ],
-                response_format={"type": "json_object"}
-            )
-
-            result = json.loads(response.choices[0].message.content)
-            urls = result.get('urls', [])
-
-            # Clean and validate URLs
-            valid_urls = []
-            for url in urls:
-                if isinstance(url, str):  # Ensure URL is a string
-                    cleaned_url = clean_and_validate_url(url)
-                    if cleaned_url:
-                        valid_urls.append(cleaned_url)
-                        logger.info(f"Added valid URL: {cleaned_url}")
-                else:
-                    logger.warning(f"Skipping invalid URL format: {url}")
-                    continue
-
-            logger.info(f"Found {len(valid_urls)} valid court directory URLs")
-            return valid_urls
-
-        except Exception as e:
-            logger.error(f"Error in OpenAI API call: {str(e)}")
-            # Return a default list of well-known court URLs as fallback
-            default_urls = [
-                "https://www.uscourts.gov",
-                "https://www.supremecourt.gov",
-                "https://www.ca1.uscourts.gov",
-                "https://www.ca2.uscourts.gov",
-                "https://www.ca3.uscourts.gov"
-            ]
-            logger.info("Using default court URLs as fallback")
-            return default_urls
-
-    except Exception as e:
-        logger.error(f"Error searching court directories: {str(e)}")
         return []
 
 def verify_court_info(court_data: Dict) -> Dict:
@@ -394,7 +326,7 @@ Respond with a JSON object containing:
             'status': result['status'],
             'address': result['address'],
             'contact_info': result.get('contact_info', {}),
-            'additional_info': result['additional_info']
+            'additional_info': result.get('additional_info')
         })
 
         return court_data
@@ -458,24 +390,17 @@ Return a JSON object with an array of courts:
             result = json.loads(response.choices[0].message.content)
             courts = result.get('courts', [])
 
-            # Verify each discovered court
-            verified_courts = []
+            # Add URLs to courts if found in content
             for court in courts:
                 if not court.get('url') and 'name' in court:
-                    # Try to find URL in original content
                     court_name_pattern = re.escape(court['name'])
                     url_match = re.search(f'href=[\'"]([^\'"]*){court_name_pattern}[\'"]', content)
                     if url_match:
                         matched_url = url_match.group(1)
-                        # Ensure URL is absolute
                         court['url'] = urljoin(base_url, matched_url)
 
-                verified_court = verify_court_info(court)
-                if verified_court.get('verified', False) and verified_court.get('confidence', 0) > 0.7:
-                    verified_courts.append(verified_court)
-
-            logger.info(f"Discovered and verified {len(verified_courts)} courts from content at {base_url}")
-            return verified_courts
+            logger.info(f"Discovered {len(courts)} courts from content at {base_url}")
+            return courts
 
         except Exception as e:
             logger.error(f"Error in OpenAI API call: {str(e)}")
