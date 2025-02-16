@@ -11,6 +11,12 @@ from court_data import get_db_connection
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def format_timestamp(ts):
+    """Format timestamp for display"""
+    if ts is None:
+        return "N/A"
+    return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
+
 # Page configuration
 st.set_page_config(
     page_title="Court Location Scraper | Court Monitoring Platform",
@@ -238,12 +244,6 @@ if stats:
         hide_index=True
     )
 
-
-def format_timestamp(ts):
-    """Format timestamp for display"""
-    if ts is None:
-        return "N/A"
-    return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 def get_court_sources():
     """Get all court sources with their status"""
