@@ -791,7 +791,7 @@ def initialize_base_courts() -> None:
             ("Northern District of California", "San Francisco, CA", 37.7749, -122.4194),
             ("Southern District of Florida", "Miami, FL", 25.7617, -80.1918),
             ("Eastern District of Texas", "Tyler, TX", 32.3513, -95.3011),
-            ("District of Massachusetts", "Boston, MA", 42.3601, -710589)
+            ("District of Massachusetts", ""Boston, MA", 42.3601, -710589)
         ]
 
         for name, location, lat, lon in district_courts:
@@ -972,6 +972,7 @@ def update_scraper_status(
     stage: Optional[str] = None
 ) -> None:
     """Update the status of the current scraper run with enhanced progress tracking"""
+    conn = None
     try:
         conn = get_db_connection()
         if not conn:
@@ -1005,7 +1006,7 @@ def update_scraper_status(
                         ELSE NULL
                     END
                 WHERE id = %s
-                RETURNING id
+                RETURNING id;
             """, (
                 sources_processed,
                 total_sources,
@@ -1021,6 +1022,7 @@ def update_scraper_status(
             # Ensure the update was successful
             if cur.fetchone() is None:
                 logger.error(f"Failed to update status for run {update_id}")
+                conn.rollback()
                 return
 
             conn.commit()
@@ -1031,47 +1033,51 @@ def update_scraper_status(
             conn.rollback()
         finally:
             cur.close()
+    finally:
+        if conn:
             conn.close()
-
-    except Exception as e:
-        logger.error(f"Error in update_scraper_status: {str(e)}")
 
 def initialize_inventory_run():
     """Initialize a new inventory update run"""
     logger.info("Initializing new inventory update run")
-    conn = get_db_connection()
-    if not conn:
-        logger.error("Failed to get database connection")
-        return None
-
-    cur = conn.cursor()
+    conn = None
     try:
-        # Create new inventory update record
-        cur.execute("""
-            INSERT INTO inventory_updates 
-                (started_at, status, stage, total_sources, sources_processed)
-            VALUES 
-                (CURRENT_TIMESTAMP, 'running', 'Initializing', 0, 0)
-            RETURNING id
-        """)
-        update_id = cur.fetchone()[0]
-        conn.commit()
-        logger.info(f"Created new inventory update run with ID: {update_id}")
-        return update_id
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection")
+            return None
 
-    except Exception as e:
-        logger.error(f"Error initializing inventory run: {str(e)}")
-        conn.rollback()
-        return None
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO inventory_updates 
+                (started_at, status, stage)
+                VALUES (CURRENT_TIMESTAMP, 'running', 'Starting inventory update')
+                RETURNING id;
+            """)
+            run_id = cur.fetchone()[0]
+            conn.commit()
+            logger.info(f"Created new inventory update run with ID: {run_id}")
+            return run_id
+
+        except Exception as e:
+            logger.error(f"Error initializing inventory run: {str(e)}")
+            conn.rollback()
+            return None
+        finally:
+            cur.close()
     finally:
-        cur.close()
-        conn.close()
+        if conn:
+            conn.close()
 
 def get_db_connection():
+    """Get a database connection from the connection pool"""
     try:
-        return psycopg2.connect(os.environ['DATABASE_URL'])
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        conn.autocommit = False  # Explicit transaction management
+        return conn
     except Exception as e:
-        logger.error(f"Error connecting to database: {str(e)}")
+        logger.error(f"Error getting database connection: {str(e)}")
         return None
 
 if __name__ == "__main__":

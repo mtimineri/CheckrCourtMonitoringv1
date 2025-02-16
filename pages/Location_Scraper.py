@@ -37,11 +37,71 @@ st.set_page_config(
 st.title("Court Location Scraper")
 st.markdown("Monitor and update the court location inventory")
 
-# Initialize session state for progress tracking
-if 'update_status' not in st.session_state:
-    st.session_state.update_status = None
-if 'last_status_check' not in st.session_state:
-    st.session_state.last_status_check = None
+def get_inventory_status():
+    """Get the latest inventory update status"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            return None
+
+        cur = conn.cursor()
+        try:
+            # First check for any running updates
+            cur.execute("""
+                SELECT 
+                    id, started_at, completed_at, total_sources,
+                    sources_processed, status, message,
+                    current_source, next_source, stage,
+                    new_courts_found, courts_updated
+                FROM inventory_updates
+                WHERE status = 'running'
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)
+            status = cur.fetchone()
+
+            if not status:
+                # If no running updates, get the latest completed one
+                cur.execute("""
+                    SELECT 
+                        id, started_at, completed_at, total_sources,
+                        sources_processed, status, message,
+                        current_source, next_source, stage,
+                        new_courts_found, courts_updated
+                    FROM inventory_updates
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                """)
+                status = cur.fetchone()
+
+            if status:
+                return {
+                    'id': status[0],
+                    'start_time': status[1],
+                    'end_time': status[2],
+                    'total_sources': status[3] if status[3] is not None else 0,
+                    'sources_processed': status[4] if status[4] is not None else 0,
+                    'status': status[5] if status[5] else 'unknown',
+                    'message': status[6] if status[6] else '',
+                    'current_source': status[7] if status[7] else 'None',
+                    'next_source': status[8] if status[8] else 'None',
+                    'stage': status[9] if status[9] else 'Not started',
+                    'new_courts_found': status[10] if status[10] is not None else 0,
+                    'courts_updated': status[11] if status[11] is not None else 0
+                }
+            return None
+
+        finally:
+            cur.close()
+
+    except Exception as e:
+        logger.error(f"Error getting inventory status: {str(e)}")
+        return None
+    finally:
+        if conn:
+            conn.close()
 
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])
@@ -90,76 +150,7 @@ with col1:
     if st.button("Update Court Inventory Now", key="update_inventory_button"):
         start_update_process(update_type)
 
-
-# Get and display current update status
-def get_inventory_status():
-    """Get the latest inventory update status"""
-    try:
-        conn = get_db_connection()
-        if conn is None:
-            logger.error("Failed to get database connection")
-            return None
-
-        cur = conn.cursor()
-        try:
-            # First check for any running updates
-            cur.execute("""
-                SELECT 
-                    id, start_time, completed_at, total_sources,
-                    sources_processed, status, message,
-                    current_source, next_source, stage,
-                    new_courts_found, courts_updated
-                FROM inventory_updates
-                WHERE status = 'running'
-                ORDER BY start_time DESC
-                LIMIT 1
-            """)
-            status = cur.fetchone()
-
-            if not status:
-                # If no running updates, get the latest completed one
-                cur.execute("""
-                    SELECT 
-                        id, start_time, completed_at, total_sources,
-                        sources_processed, status, message,
-                        current_source, next_source, stage,
-                        new_courts_found, courts_updated
-                    FROM inventory_updates
-                    ORDER BY start_time DESC
-                    LIMIT 1
-                """)
-                status = cur.fetchone()
-
-            if status:
-                return {
-                    'id': status[0],
-                    'start_time': status[1],
-                    'end_time': status[2],
-                    'total_sources': status[3] if status[3] is not None else 0,
-                    'sources_processed': status[4] if status[4] is not None else 0,
-                    'status': status[5] if status[5] else 'unknown',
-                    'message': status[6] if status[6] else '',
-                    'current_source': status[7] if status[7] else 'None',
-                    'next_source': status[8] if status[8] else 'None',
-                    'stage': status[9] if status[9] else 'Not started',
-                    'new_courts_found': status[10] if status[10] is not None else 0,
-                    'courts_updated': status[11] if status[11] is not None else 0
-                }
-            return None
-
-        except Exception as e:
-            logger.error(f"Error getting inventory status: {str(e)}")
-            return None
-        finally:
-            cur.close()
-            if conn:
-                conn.close()
-
-    except Exception as e:
-        logger.error(f"Error in get_inventory_status: {str(e)}")
-        return None
-
-# Add auto-refresh for status updates
+# Initialize session state for progress tracking
 if 'update_running' not in st.session_state:
     st.session_state.update_running = False
 
@@ -167,19 +158,17 @@ if 'update_running' not in st.session_state:
 status = get_inventory_status()
 
 # Check if an update is running
-if status and status['status'] == 'running':
+if status and status.get('status') == 'running':
     st.session_state.update_running = True
-elif status and status['status'] in ['completed', 'error']:
+elif status and status.get('status') in ['completed', 'error']:
     st.session_state.update_running = False
 
 # Display status with auto-refresh
 if st.session_state.update_running:
     st.empty()  # Clear previous content
-    status_placeholder = st.empty()
-    progress_placeholder = st.empty()
-    message_placeholder = st.empty()
+    status_container = st.container()
 
-    with status_placeholder.container():
+    with status_container:
         st.subheader("Current Update Status")
 
         # Create metrics
@@ -208,16 +197,16 @@ if st.session_state.update_running:
                 delta=f"+{status.get('courts_updated', 0)} updated"
             )
 
-    # Show current activity
-    with message_placeholder:
+        # Show current activity
         if status.get('current_source'):
             st.info(f"Currently processing: {status.get('current_source', 'Unknown')}")
         if status.get('message'):
             st.write(status.get('message'))
 
-    # Auto-refresh every 2 seconds while update is running
-    time.sleep(2)
+    # Auto-refresh every 5 seconds while update is running
+    time.sleep(5)
     st.rerun()
+
 else:
     # Show regular status display for non-running states
     if status:
@@ -248,12 +237,6 @@ else:
                 status.get('new_courts_found', 0),
                 delta=f"+{status.get('courts_updated', 0)} updated"
             )
-
-        # Show current activity
-        if status.get('status') == 'running':
-            st.info(f"Currently processing: {status.get('current_source', 'Unknown')}")
-            if status.get('message'):
-                st.write(status.get('message'))
 
 
 # Display court statistics
