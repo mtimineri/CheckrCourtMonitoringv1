@@ -1,3 +1,7 @@
+"""
+Court inventory management module.
+Handles discovery and updates of court information.
+"""
 import json
 import trafilatura
 from typing import Dict, List, Optional, Tuple
@@ -13,6 +17,115 @@ from bs4 import BeautifulSoup
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_db_connection():
+    """Get a database connection from the connection pool"""
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        conn.autocommit = False  # Explicit transaction management
+        return conn
+    except Exception as e:
+        logger.error(f"Error getting database connection: {str(e)}")
+        return None
+
+def update_scraper_status(
+    update_id: int,
+    sources_processed: int,
+    total_sources: int,
+    status: str,
+    message: str,
+    current_source: Optional[str] = None,
+    next_source: Optional[str] = None,
+    stage: Optional[str] = None
+) -> None:
+    """Update the status of the current scraper run"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection")
+            return
+
+        cur = conn.cursor()
+        try:
+            # Calculate completion percentage
+            completion_percentage = (sources_processed / total_sources * 100) if total_sources > 0 else 0
+
+            # Format detailed status message
+            detailed_message = (
+                f"{message}\n"
+                f"Progress: {completion_percentage:.1f}% ({sources_processed}/{total_sources} sources)\n"
+                f"Current: {current_source or 'Starting...'}"
+            )
+
+            cur.execute("""
+                UPDATE inventory_updates
+                SET sources_processed = %s,
+                    total_sources = %s,
+                    status = %s,
+                    message = %s,
+                    current_source = %s,
+                    next_source = %s,
+                    stage = %s,
+                    completed_at = CASE 
+                        WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP
+                        ELSE completed_at
+                    END
+                WHERE id = %s
+            """, (
+                sources_processed,
+                total_sources,
+                status,
+                detailed_message,
+                current_source,
+                next_source,
+                stage,
+                status,
+                update_id
+            ))
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error updating scraper status: {str(e)}")
+            conn.rollback()
+        finally:
+            cur.close()
+    finally:
+        if conn:
+            conn.close()
+
+def initialize_inventory_run():
+    """Initialize a new inventory update run"""
+    logger.info("Initializing new inventory update run")
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection")
+            return None
+
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO inventory_updates 
+                (started_at, status, stage)
+                VALUES (CURRENT_TIMESTAMP, 'running', 'Starting inventory update')
+                RETURNING id;
+            """)
+            run_id = cur.fetchone()[0]
+            conn.commit()
+            logger.info(f"Created new inventory update run with ID: {run_id}")
+            return run_id
+
+        except Exception as e:
+            logger.error(f"Error initializing inventory run: {str(e)}")
+            conn.rollback()
+            return None
+        finally:
+            cur.close()
+    finally:
+        if conn:
+            conn.close()
 
 def initialize_database():
     """Create the courts table and related tables"""
@@ -691,248 +804,250 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
         conn.close()
 
 def initialize_base_courts() -> None:
-    """Initialize base court records"""
+    """Initialize base court records through database"""
     logger.info("Initializing base court records...")
-    conn = get_db_connection()
-    cur = conn.cursor()
-
+    conn = None
     try:
-        # Get federal jurisdiction ID
-        cur.execute("SELECT id FROM jurisdictions WHERE name = 'United States'")
-        federal_id = cur.fetchone()[0]
+        conn = get_db_connection()
+        if not conn:
+            logger.error("Failed to get database connection")
+            return
 
-        # Add Supreme Court
-        cur.execute("""
-            INSERT INTO courts (
-                name, type, url, jurisdiction_id, status, 
-                address, image_url, lat, lon
-            ) VALUES (
-                'Supreme Court of the United States',
-                'Supreme Court',
-                'https://www.supremecourt.gov',
-                %s,
-                'Open',
-                '1 First Street, NE Washington, DC 20543',
-                'https://images.unsplash.com/photo-1564596489416-23196d12d85c',
-                38.8897,
-                -77.0044
-            ) ON CONFLICT (name) DO UPDATE SET
-                url = EXCLUDED.url,
-                status = EXCLUDED.status,
-                address = EXCLUDED.address,
-                lat = EXCLUDED.lat,
-                lon = EXCLUDED.lon
-        """, (federal_id,))
+        cur = conn.cursor()
+        try:
+            # Get federal jurisdiction ID
+            cur.execute("SELECT id FROM jurisdictions WHERE name = 'United States'")
+            federal_id = cur.fetchone()
+            if not federal_id:
+                logger.error("Federal jurisdiction not found")
+                return
+            federal_id = federal_id[0]
 
-        # Add Circuit Courts with their coordinates
-        circuits = [
-            ("First Circuit", "Boston, MA", 42.3601, -71.0589),
-            ("Second Circuit", "New York, NY", 40.7128, -74.0060),
-            ("Third Circuit", "Philadelphia, PA", 39.9526, -75.1652),
-            ("Fourth Circuit", "Richmond, VA", 37.5407, -77.4360),
-            ("Fifth Circuit", "New Orleans, LA", 29.9511, -90.0715),
-            ("Sixth Circuit", "Cincinnati, OH", 39.1031, -84.5120),
-            ("Seventh Circuit", "Chicago, IL", 41.8781, -87.6298),
-            ("Eighth Circuit", "St. Louis, MO", 38.6270, -90.1994),
-            ("Ninth Circuit", "San Francisco, CA", 37.7749, -122.4194),
-            ("Tenth Circuit", "Denver, CO", 39.7392, -104.9903),
-            ("Eleventh Circuit", "Atlanta, GA", 33.7490, -84.3880),
-            ("D.C. Circuit", "Washington, DC", 38.8977, -77.0365),
-            ("Federal Circuit", "Washington, DC", 38.8977, -77.0365)
-        ]
-
-        # Add Circuit Courts
-        for circuit, location, lat, lon in circuits:
-            # Generate correct URL format based on circuit name
-            if circuit == "D.C. Circuit":
-                url = "https://www.cadc.uscourts.gov"
-            elif circuit == "Federal Circuit":
-                url = "https://cafc.uscourts.gov"
-            else:
-                circuit_num = str(circuits.index((circuit, location, lat, lon)) + 1)
-                url = f"https://www.ca{circuit_num}.uscourts.gov"
-
+            # Add Supreme Court through database
             cur.execute("""
                 INSERT INTO courts (
-                    name, type, url, jurisdiction_id, status,
+                    name, type, url, jurisdiction_id, status, 
                     address, image_url, lat, lon
                 ) VALUES (
+                    'Supreme Court of the United States',
+                    'Supreme Court',
+                    'https://www.supremecourt.gov',
                     %s,
+                    'Open',
+                    '1 First Street, NE Washington, DC 20543',
+                    'https://images.unsplash.com/photo-1564596489416-23196d12d85c',
+                    38.8897,
+                    -77.0044
+                ) ON CONFLICT (name) DO UPDATE SET
+                    url = EXCLUDED.url,
+                    status = EXCLUDED.status,
+                    address = EXCLUDED.address,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon
+            """, (federal_id,))
+
+            # Insert Circuit Courts data through database
+            circuits_data = [
+                ("First Circuit", "Boston, MA", 42.3601, -71.0589),
+                ("Second Circuit", "New York, NY", 40.7128, -74.0060),
+                ("Third Circuit", "Philadelphia, PA", 39.9526, -75.1652),
+                ("Fourth Circuit", "Richmond, VA", 37.5407, -77.4360),
+                ("Fifth Circuit", "New Orleans, LA", 29.9511, -90.0715),
+                ("Sixth Circuit", "Cincinnati, OH", 39.1031, -84.5120),
+                ("Seventh Circuit", "Chicago, IL", 41.8781, -87.6298),
+                ("Eighth Circuit", "St. Louis, MO", 38.6270, -90.1994),
+                ("Ninth Circuit", "San Francisco, CA", 37.7749, -122.4194),
+                ("Tenth Circuit", "Denver, CO", 39.7392, -104.9903),
+                ("Eleventh Circuit", "Atlanta, GA", 33.7490, -84.3880),
+                ("D.C. Circuit", "Washington, DC", 38.8977, -77.0365),
+                ("Federal Circuit", "Washington, DC", 38.8977, -77.0365)
+            ]
+
+            # Insert circuit courts using execute_values for better performance
+            circuit_values = []
+            for circuit, location, lat, lon in circuits_data:
+                url = ("https://www.cadc.uscourts.gov" if circuit == "D.C. Circuit"
+                      else "https://cafc.uscourts.gov" if circuit == "Federal Circuit"
+                      else f"https://www.ca{circuits_data.index((circuit, location, lat, lon)) + 1}.uscourts.gov")
+
+                circuit_values.append((
+                    f"U.S. Court of Appeals for the {circuit}",
                     'Courts of Appeals',
-                    %s,
-                    %s,
+                    url,
+                    federal_id,
                     'Open',
-                    %s,
+                    f"Federal Courthouse, {location}",
                     'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    %s,
-                    %s
-                ) ON CONFLICT (name) DO UPDATE SET
-                    url = EXCLUDED.url,
-                    status = EXCLUDED.status,
-                    address = EXCLUDED.address,
-                    lat = EXCLUDED.lat,
-                    lon = EXCLUDED.lon
-            """, (
-                f"U.S. Court of Appeals for the {circuit}",
-                url,
-                federal_id,
-                f"Federal Courthouse, {location}",
-                lat,
-                lon
-            ))
+                    lat,
+                    lon
+                ))
 
-        # Add District Courts
-        district_courts = [
-            ("Southern District of New York", "New York, NY", 40.7143, -74.0060),
-            ("Central District of California", "Los Angeles, CA", 34.0522, -118.2437),
-            ("Northern District of Illinois", "Chicago, IL", 41.8781, -87.6298),
-            ("District of Columbia", "Washington, DC", 38.8977, -77.0365),
-            ("Eastern District of Virginia", "Alexandria, VA", 38.8048, -77.0469),
-            ("Northern District of California", "San Francisco, CA", 37.7749, -122.4194),
-            ("Southern District of Florida", "Miami, FL", 25.7617, -80.1918),
-            ("Eastern District of Texas", "Tyler, TX", 32.3513, -95.3011),
-            ("District of Massachusetts", ""Boston, MA", 42.3601, -710589)
-        ]
-
-        for name, location, lat, lon in district_courts:
-            url = f"https://www.{name.lower().replace(' ', '')}.uscourts.gov"
-            cur.execute("""
-                INSERT INTO courts (name, type, url, jurisdiction_id, status,
-                    address, image_url, lat, lon
-                ) VALUES (
-                    %s,
-                    'District Courts',
-                    %s,
-                    %s,
-                    'Open',
-                    %s,
-                    'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    %s,
-                    %s
-                ) ON CONFLICT (name) DO UPDATE SET
-                    url = EXCLUDED.url,
-                    status = EXCLUDED.status,
-                    address = EXCLUDED.address,                    lat = EXCLUDed.lat,
-                    lon = EXCLUDED.lon
-            """, (
-                f"U.S. District Court for the {name}",
-                url,
-                federal_id,
-                f"Federal Courthouse, {location}",
-                lat,
-                lon
-            ))
-        # Add Major Bankruptcy Courts
-        bankruptcy_courts = [
-            ("Southern District of New York", "New York, NY", 40.7143, -74.0060),
-            ("District of Delaware", "Wilmington, DE", 39.7447, -75.5484),
-            ("Central District of California", "Los Angeles, CA", 34.0522, -118.2437),
-            ("Northern District of Illinois", "Chicago, IL", 41.8781, -87.6298),
-            ("Southern District of Texas", "Houston, TX", 29.7604, -95.3698)
-        ]
-
-        for district, location, lat, lon in bankruptcy_courts:
-            url = f"https://www.{district.lower().replace(' ', '')}.uscourts.gov/bankruptcy"
-            cur.execute("""
+            execute_values(cur, """
                 INSERT INTO courts (
                     name, type, url, jurisdiction_id, status,
                     address, image_url, lat, lon
-                ) VALUES (
-                    %s,
-                    'Bankruptcy Courts',
-                    %s,
-                    %s,
-                    'Open',
-                    %s,
-                    'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    %s,
-                    %s
-                ) ON CONFLICT (name) DO UPDATE SET
+                ) VALUES %s
+                ON CONFLICT (name) DO UPDATE SET
                     url = EXCLUDED.url,
                     status = EXCLUDED.status,
                     address = EXCLUDED.address,
                     lat = EXCLUDED.lat,
                     lon = EXCLUDED.lon
-                    """, (
-                f"U.S. Bankruptcy Court for the {district}",
-                url,
-                federal_id,
-                f"Federal Courthouse, {location}",
-                lat,
-                lon
-            ))
+            """, circuit_values)
 
-        # Add County Courts
-        # First get some major county jurisdictions
-        cur.execute("""
-            SELECT j.id, j.name, s.name as state_name
-            FROM jurisdictions j
-            JOIN jurisdictions s ON j.parent_id = s.id
-            WHERE j.type = 'county'
-            ORDER BY s.name, j.name
-        """)
-        counties = cur.fetchall()
+            # Initialize district courts data through database
+            district_courts_data = [
+                ("Southern District of New York", "New York, NY", 40.7143, -74.0060),
+                ("Central District of California", "Los Angeles, CA", 34.0522, -118.2437),
+                ("Northern District of Illinois", "Chicago, IL", 41.8781, -87.6298),
+                ("District of Columbia", "Washington, DC", 38.8977, -77.0365),
+                ("Eastern District of Virginia", "Alexandria, VA", 38.8048, -77.0469),
+                ("Northern District of California", "San Francisco, CA", 37.7749, -122.4194),
+                ("Southern District of Florida", "Miami, FL", 25.7617, -80.1918),
+                ("Eastern District of Texas", "Tyler, TX", 32.3513, -95.3011),
+                ("District of Massachusetts", "Boston, MA", 42.3601, -71.0589)
+            ]
 
-        # Add courts for each county
-        for county_id, county_name, state_name in counties:
-            # Superior Court
-            cur.execute("""
+            # Insert district courts using execute_values
+            district_values = []
+            for name, location, lat, lon in district_courts_data:
+                url = f"https://www.{name.lower().replace(' ', '')}.uscourts.gov"
+                district_values.append((
+                    f"U.S. District Court for the {name}",
+                    'District Courts',
+                    url,
+                    federal_id,
+                    'Open',
+                    f"Federal Courthouse, {location}",
+                    'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
+                    lat,
+                    lon
+                ))
+
+            execute_values(cur, """
                 INSERT INTO courts (
-                    name, type, jurisdiction_id, status,
+                    name, type, url, jurisdiction_id, status,
                     address, image_url, lat, lon
-                ) VALUES (
-                    %s, 'County Superior Courts', %s, 'Open',
-                    %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    NULL, NULL
-                ) ON CONFLICT (name) DO NOTHING
-            """, (
-                f"{county_name} Superior Court",
-                county_id,
-                f"County Courthouse, {county_name}, {state_name}"
-            ))
+                ) VALUES %s
+                ON CONFLICT (name) DO UPDATE SET
+                    url = EXCLUDED.url,
+                    status = EXCLUDED.status,
+                    address = EXCLUDED.address,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon
+            """, district_values)
 
-            # Family Court
-            cur.execute("""
+            # Add Major Bankruptcy Courts through database
+            bankruptcy_courts = [
+                ("Southern District of New York", "New York, NY", 40.7143, -74.0060),
+                ("District of Delaware", "Wilmington, DE", 39.7447, -75.5484),
+                ("Central District of California", "Los Angeles, CA", 34.0522, -118.2437),
+                ("Northern District of Illinois", "Chicago, IL", 41.8781, -87.6298),
+                ("Southern District of Texas", "Houston, TX", 29.7604, -95.3698)
+            ]
+
+            # Insert bankruptcy courts using execute_values
+            bankruptcy_values = []
+            for district, location, lat, lon in bankruptcy_courts:
+                url = f"https://www.{district.lower().replace(' ', '')}.uscourts.gov/bankruptcy"
+                bankruptcy_values.append((
+                    f"U.S. Bankruptcy Court for the {district}",
+                    'Bankruptcy Courts',
+                    url,
+                    federal_id,
+                    'Open',
+                    f"Federal Courthouse, {location}",
+                    'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
+                    lat,
+                    lon
+                ))
+
+            execute_values(cur, """
                 INSERT INTO courts (
-                    name, type, jurisdiction_id, status,
+                    name, type, url, jurisdiction_id, status,
                     address, image_url, lat, lon
-                ) VALUES (
-                    %s, 'County Family Courts', %s, 'Open',
-                    %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    NULL, NULL
-                ) ON CONFLICT (name) DO NOTHING
-            """, (
-                f"{county_name} Family Court",
-                county_id,
-                f"Family Court Division, {county_name}, {state_name}"
-            ))
+                ) VALUES %s
+                ON CONFLICT (name) DO UPDATE SET
+                    url = EXCLUDED.url,
+                    status = EXCLUDED.status,
+                    address = EXCLUDED.address,
+                    lat = EXCLUDED.lat,
+                    lon = EXCLUDED.lon
+            """, bankruptcy_values)
 
-            # Criminal Court
+            # Add County Courts through database
+            # First get some major county jurisdictions
             cur.execute("""
-                INSERT INTO courts (
-                    name, type, jurisdiction_id, status,
-                    address, image_url, lat, lon
-                ) VALUES (
-                    %s, 'County Criminal Courts', %s, 'Open',
-                    %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
-                    NULL, NULL
-                ) ON CONFLICT (name) DO NOTHING
-            """, (
-                f"{county_name} Criminal Court",
-                county_id,
-                f"Criminal Court Building, {county_name}, {state_name}"
-            ))
+                SELECT j.id, j.name, s.name as state_name
+                FROM jurisdictions j
+                JOIN jurisdictions s ON j.parent_id = s.id
+                WHERE j.type = 'county'
+                ORDER BY s.name, j.name
+            """)
+            counties = cur.fetchall()
 
-        conn.commit()
-        logger.info("Successfully initialized base court records including county courts")
+            # Add courts for each county
+            for county_id, county_name, state_name in counties:
+                # Superior Court
+                cur.execute("""
+                    INSERT INTO courts (
+                        name, type, jurisdiction_id, status,
+                        address, image_url, lat, lon
+                    ) VALUES (
+                        %s, 'County Superior Courts', %s, 'Open',
+                        %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
+                        NULL, NULL
+                    ) ON CONFLICT (name) DO NOTHING
+                """, (
+                    f"{county_name} Superior Court",
+                    county_id,
+                    f"County Courthouse, {county_name}, {state_name}"
+                ))
 
-    except Exception as e:
-        logger.error(f"Error initializing base courts: {str(e)}")
-        conn.rollback()
-        raise
+                # Family Court
+                cur.execute("""
+                    INSERT INTO courts (
+                        name, type, jurisdiction_id, status,
+                        address, image_url, lat, lon
+                    ) VALUES (
+                        %s, 'County Family Courts', %s, 'Open',
+                        %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
+                        NULL, NULL
+                    ) ON CONFLICT (name) DO NOTHING
+                """, (
+                    f"{county_name} Family Court",
+                    county_id,
+                    f"Family Court Division, {county_name}, {state_name}"
+                ))
+
+                # Criminal Court
+                cur.execute("""
+                    INSERT INTO courts (
+                        name, type, jurisdiction_id, status,
+                        address, image_url, lat, lon
+                    ) VALUES (
+                        %s, 'County Criminal Courts', %s, 'Open',
+                        %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
+                        NULL, NULL
+                    ) ON CONFLICT (name) DO NOTHING
+                """, (
+                    f"{county_name} Criminal Court",
+                    county_id,
+                    f"Criminal Court Building, {county_name}, {state_name}"
+                ))
+
+            conn.commit()
+            logger.info("Successfully initialized base court records including county courts")
+
+        except Exception as e:
+            logger.error(f"Error initializing base courts: {str(e)}")
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
     finally:
-        cur.close()
-        conn.close()
+        if conn:
+            conn.close()
 
 def build_court_inventory() -> List[Dict]:
     """
