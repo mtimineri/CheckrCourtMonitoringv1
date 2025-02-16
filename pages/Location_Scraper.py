@@ -185,98 +185,95 @@ st.markdown("Monitor and update the court location inventory")
 status = get_inventory_status()
 is_update_running = status and status.get('status') == 'running'
 
-if status:
-    # Store status in session state if it's changed
-    if (st.session_state.update_status is None or 
-        st.session_state.update_status.get('id') != status.get('id') or
-        st.session_state.update_status.get('sources_processed') != status.get('sources_processed')):
-        st.session_state.update_status = status
-        st.session_state.last_status_check = datetime.now()
-
-    # Create metrics with container for dynamic updates
-    metrics_container = st.container()
-
-    with metrics_container:
+# Modified progress tracking section
+def create_progress_metrics(status):
+    """Create progress metrics in a container"""
+    with st.container():
         col1, col2, col3 = st.columns(3)
 
         with col1:
             total = status.get('total_sources', 0) or 0
             processed = status.get('sources_processed', 0) or 0
             progress = (processed / total * 100) if total > 0 else 0
-            st.metric("Update Progress", f"{progress:.1f}%")
+            st.metric(
+                "Update Progress",
+                f"{progress:.1f}%",
+                delta=f"{processed} of {total}"
+            )
 
         with col2:
-            st.metric("Sources Processed", f"{processed}/{total}")
+            current_source = status.get('current_source', 'None')
+            st.metric(
+                "Current Source",
+                current_source,
+                delta="Processing" if status.get('status') == 'running' else None
+            )
 
         with col3:
-            st.metric("Status", status.get('status', 'Unknown').title())
+            st.metric(
+                "Status",
+                status.get('status', 'Unknown').title(),
+                delta=status.get('stage', '')
+            )
 
-        # Add additional metrics for better visibility
+        # Add additional metrics
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("New Courts Found", status.get('new_courts_found', 0))
-            st.metric("Courts Updated", status.get('courts_updated', 0))
+            st.metric(
+                "New Courts Found",
+                status.get('new_courts_found', 0),
+                delta=None
+            )
+            st.metric(
+                "Courts Updated",
+                status.get('courts_updated', 0),
+                delta=None
+            )
 
-        with col2:
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                # Get the last successful update timestamp
-                cur.execute("""
-                    SELECT completed_at 
-                    FROM inventory_updates 
-                    WHERE status = 'completed' 
-                    ORDER BY completed_at DESC 
-                    LIMIT 1
-                """)
-                last_update = cur.fetchone()
-                if last_update:
-                    st.metric("Last Successful Update", format_timestamp(last_update[0]))
 
-                # Get total courts count
-                cur.execute("SELECT COUNT(*) FROM courts")
-                total_courts = cur.fetchone()[0]
-                st.metric("Total Courts in Database", total_courts)
-                cur.close()
-                conn.close()
 
-    # Update status details section
-    details_container = st.container()
-    with details_container:
-        status_details = [
-            ("Current Stage", status.get('stage', 'Not started')),
-            ("Current Source", status.get('current_source', 'None')),
-            ("Next Source", status.get('next_source', 'None')),
-            ("Started", format_timestamp(status.get('start_time'))),
-            ("Completed", format_timestamp(status.get('end_time')))
-        ]
+# Main progress section update
+if status:
+    progress_container = st.container()
+    with progress_container:
+        create_progress_metrics(status)
 
+        # Update status details section
         st.subheader("Update Details")
-        for label, value in status_details:
-            st.text(f"{label}: {value}")
+        details_expander = st.expander("View Details", expanded=True)
+        with details_expander:
+            for label, value in [
+                ("Stage", status.get('stage', 'Not started')),
+                ("Current Source", status.get('current_source', 'None')),
+                ("Next Source", status.get('next_source', 'None')),
+                ("Started", format_timestamp(status.get('start_time'))),
+                ("Completed", format_timestamp(status.get('end_time')))
+            ]:
+                st.text(f"{label}: {value}")
 
-        if status.get('message'):
-            st.info(status.get('message'))
+            if status.get('message'):
+                st.info(status.get('message'))
 
-        # Add error logs if any
-        if status.get('status') == 'error':
-            conn = get_db_connection()
-            if conn:
-                cur = conn.cursor()
-                st.error("Latest Error Logs:")
-                cur.execute("""
-                    SELECT timestamp, message 
-                    FROM scraper_logs 
-                    WHERE scraper_run_id = %s 
-                    AND level = 'ERROR'
-                    ORDER BY timestamp DESC 
-                    LIMIT 5
-                """, (status['id'],))
-                error_logs = cur.fetchall()
-                for timestamp, message in error_logs:
-                    st.code(f"{format_timestamp(timestamp)}: {message}")
-                cur.close()
-                conn.close()
+            # Display error logs if any
+            if status.get('status') == 'error':
+                error_expander = st.expander("Error Logs", expanded=True)
+                with error_expander:
+                    conn = get_db_connection()
+                    if conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            SELECT timestamp, message 
+                            FROM scraper_logs 
+                            WHERE scraper_run_id = %s 
+                            AND level = 'ERROR'
+                            ORDER BY timestamp DESC 
+                            LIMIT 5
+                        """, (status['id'],))
+                        error_logs = cur.fetchall()
+                        for timestamp, message in error_logs:
+                            st.error(f"{format_timestamp(timestamp)}: {message}")
+                        cur.close()
+                        conn.close()
 
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])

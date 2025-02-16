@@ -6,6 +6,10 @@ from openai import OpenAI
 import trafilatura
 from urllib.parse import urljoin
 import re
+import urllib3
+
+# Disable SSL verification warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +34,7 @@ def validate_url(url: str) -> bool:
             return False
 
         # Test URL accessibility with SSL verification disabled
-        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
         if not downloaded:
             logger.warning(f"Unable to access URL: {cleaned_url}")
             return False
@@ -40,84 +44,70 @@ def validate_url(url: str) -> bool:
         logger.error(f"Error validating URL {url}: {str(e)}")
         return False
 
-def search_court_directories() -> List[str]:
-    """
-    Use OpenAI to generate a list of potential court directory URLs
-    """
+def clean_and_validate_url(url: str) -> Optional[str]:
+    """Clean and validate a URL, returning None if invalid"""
     try:
-        system_prompt = """As a court directory expert, generate a comprehensive list of official court directory URLs in the United States. Include:
+        # Clean up the URL
+        cleaned_url = url.split('(')[0].strip()
+        if not cleaned_url.startswith(('http://', 'https://')):
+            cleaned_url = 'https://' + cleaned_url
 
-1. Federal Courts:
-   - Supreme Court
-   - Courts of Appeals (all circuits)
-   - District Courts
-   - Bankruptcy Courts
-   - Federal Judicial Center
-   - Court of Federal Claims
-   - Court of International Trade
+        # Validate format
+        if not re.match(r'^https?://[\w\-.]+(:\d+)?(/[\w\-./?%&=]*)?$', cleaned_url):
+            return None
 
-2. State Courts for all 50 states:
-   - State Supreme Courts
-   - State Courts of Appeals
-   - State Trial Courts
-   - State Judicial Branch websites
-   - State Administrative Courts
-   - State Tax Courts
-   - State Workers' Compensation Courts
+        return cleaned_url
+    except Exception:
+        return None
 
-3. County Courts (for major counties in each state):
-   - Superior Courts
-   - Circuit Courts
-   - District Courts
-   - Family Courts
-   - Probate Courts
-   - Criminal Courts
-   - Civil Courts
-   - Juvenile Courts
-   - Small Claims Courts
-
-4. Municipal Courts:
-   - City Courts
-   - Town Courts
-   - Village Courts
-   - Traffic Courts
-
-5. Tribal Courts:
-   - Tribal Supreme Courts
-   - Tribal District Courts
-   - Tribal Administrative Courts
-
-Focus on official government domains (.gov, .us) and state judicial websites.
-Return a JSON object with the following structure:
+def search_court_directories() -> List[str]:
+    """Use OpenAI to generate a list of potential court directory URLs"""
+    try:
+        system_prompt = """You are a court information specialist. Generate a list of valid, accessible court directory URLs for the United States. Return ONLY an array of direct URLs in JSON format, like this:
 {
-    "federal_urls": [],
-    "state_urls": [],
-    "county_urls": [],
-    "municipal_urls": [],
-    "tribal_urls": []
-}"""
+    "urls": [
+        "https://www.uscourts.gov",
+        "https://www.supremecourt.gov"
+    ]
+}
+
+Focus on:
+1. Main federal court websites
+2. State supreme court websites
+3. Major district court portals
+4. Bankruptcy court directories
+
+Rules:
+1. Use only .gov or .us domains when possible
+2. Ensure URLs are direct links (no search pages)
+3. Include only base domains, no query parameters
+4. No parenthetical text or spaces in URLs"""
 
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Generate a comprehensive list of official court directory URLs for the United States, including all levels of courts."}
+                {"role": "user", "content": "Generate a list of valid US court directory URLs"}
             ],
             response_format={"type": "json_object"}
         )
 
         result = json.loads(response.choices[0].message.content)
-        # Combine all URLs into a single list
-        all_urls = (
-            result.get('federal_urls', []) + 
-            result.get('state_urls', []) + 
-            result.get('county_urls', []) +
-            result.get('municipal_urls', []) +
-            result.get('tribal_urls', [])
-        )
+        urls = result.get('urls', [])
 
-        logger.info(f"Found {len(all_urls)} potential court directory URLs")
-        return all_urls
+        # Clean and validate URLs
+        valid_urls = []
+        for url in urls:
+            if isinstance(url, str):  # Ensure URL is a string
+                cleaned_url = clean_and_validate_url(url)
+                if cleaned_url:
+                    valid_urls.append(cleaned_url)
+            else:
+                logger.warning(f"Skipping invalid URL format: {url}")
+                continue
+
+        logger.info(f"Found {len(valid_urls)} valid court directory URLs")
+        return valid_urls
 
     except Exception as e:
         logger.error(f"Error searching court directories: {str(e)}")
@@ -296,7 +286,7 @@ def process_court_page(url: str) -> List[Dict]:
             logger.warning(f"Skipping invalid or inaccessible URL: {url}")
             return []
 
-        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
             return []

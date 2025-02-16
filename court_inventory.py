@@ -303,16 +303,31 @@ def initialize_court_sources() -> None:
 
         # Add discovered sources
         for url in directory_urls:
-            try:
-                cur.execute("""
-                    INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                    VALUES (%s, %s, true)
-                    ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                    SET is_active = true, last_checked = CURRENT_TIMESTAMP
-                """, (federal_id, url))
-            except Exception as e:
-                logger.error(f"Error adding court source {url}: {str(e)}")
-                continue
+            if isinstance(url, str):  # Ensure URL is a string
+                try:
+                    cur.execute("""
+                        INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
+                        VALUES (%s, %s, true)
+                        ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
+                        SET is_active = true, last_checked = CURRENT_TIMESTAMP
+                    """, (federal_id, url))
+                except Exception as e:
+                    logger.error(f"Error adding court source {url}: {str(e)}")
+                    continue
+            elif isinstance(url, dict):
+                try:
+                    # Extract URL from dictionary format
+                    if 'url' in url:
+                        source_url = url['url']
+                        cur.execute("""
+                            INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
+                            VALUES (%s, %s, true)
+                            ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
+                            SET is_active = true, last_checked = CURRENT_TIMESTAMP
+                        """, (federal_id, source_url))
+                except Exception as e:
+                    logger.error(f"Error adding court source from dict {url}: {str(e)}")
+                    continue
 
         # Add specific state court websites
         specific_state_courts = [
