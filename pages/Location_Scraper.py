@@ -232,7 +232,6 @@ def create_progress_metrics(status):
             )
 
 
-
 # Main progress section update
 if status:
     progress_container = st.container()
@@ -298,8 +297,14 @@ with col1:
                     # Start court discovery process
                     st.info(f"Starting enhanced court discovery for {update_type}...")
 
+                    update_id = result.get('update_id')  # Get update_id from the result
+
                     # Update status for discovery phase
                     update_scraper_status(
+                        update_id=update_id,
+                        status="running",
+                        sources_processed=0,
+                        total_sources=0,  # Will be updated once we have court URLs
                         stage="discovery",
                         message=f"Starting enhanced discovery for {update_type}",
                         current_source="Fetching court directories"
@@ -310,8 +315,11 @@ with col1:
 
                     # Update status with total sources
                     update_scraper_status(
-                        stage="processing",
+                        update_id=update_id,
+                        status="running",
+                        sources_processed=0,
                         total_sources=len(court_urls),
+                        stage="processing",
                         message=f"Found {len(court_urls)} potential court directories"
                     )
 
@@ -329,9 +337,12 @@ with col1:
                     for url in filtered_urls:
                         # Update status for current source
                         update_scraper_status(
+                            update_id=update_id,
+                            status="running",
+                            sources_processed=sources_processed,
+                            total_sources=len(filtered_urls),
                             stage="processing",
                             current_source=url,
-                            sources_processed=sources_processed,
                             message=f"Processing {url}"
                         )
 
@@ -341,9 +352,11 @@ with col1:
 
                         # Update progress in status
                         update_scraper_status(
-                            stage="processing",
+                            update_id=update_id,
+                            status="running",
                             sources_processed=sources_processed,
-                            new_courts_found=total_courts_found,
+                            total_sources=len(filtered_urls),
+                            stage="processing",
                             message=f"Processed {sources_processed} of {len(filtered_urls)} sources"
                         )
 
@@ -352,9 +365,11 @@ with col1:
 
                     # Final status update
                     update_scraper_status(
-                        stage="completed",
+                        update_id=update_id,
+                        status="completed",
                         sources_processed=len(filtered_urls),
-                        new_courts_found=total_courts_found,
+                        total_sources=len(filtered_urls),
+                        stage="completed",
                         message=f"Discovery completed: Found {total_courts_found} courts for {update_type}"
                     )
 
