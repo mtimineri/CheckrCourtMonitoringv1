@@ -971,7 +971,7 @@ def update_scraper_status(
     next_source: Optional[str] = None,
     stage: Optional[str] = None
 ) -> None:
-    """Update the status of the current scraper run"""
+    """Update the status of the current scraper run with enhanced progress tracking"""
     try:
         conn = get_db_connection()
         if not conn:
@@ -983,6 +983,14 @@ def update_scraper_status(
             # Calculate completion percentage
             completion_percentage = (sources_processed / total_sources * 100) if total_sources > 0 else 0
 
+            # Format detailed status message
+            detailed_message = (
+                f"{message}\n"
+                f"Progress: {completion_percentage:.1f}% ({sources_processed}/{total_sources} sources)\n"
+                f"Current: {current_source or 'Starting...'}"
+            )
+
+            # Update database with latest status
             cur.execute("""
                 UPDATE inventory_updates
                 SET sources_processed = %s,
@@ -994,22 +1002,29 @@ def update_scraper_status(
                     stage = %s,
                     completed_at = CASE 
                         WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP
-                        ELSE completed_at
+                        ELSE NULL
                     END
                 WHERE id = %s
+                RETURNING id
             """, (
                 sources_processed,
                 total_sources,
                 status,
-                f"{message} ({completion_percentage:.1f}% complete)",
+                detailed_message,
                 current_source,
                 next_source,
                 stage,
                 status,
                 update_id
             ))
+
+            # Ensure the update was successful
+            if cur.fetchone() is None:
+                logger.error(f"Failed to update status for run {update_id}")
+                return
+
             conn.commit()
-            logger.info(f"Successfully updated scraper status: {message}")
+            logger.info(f"Successfully updated scraper status: {detailed_message}")
 
         except Exception as e:
             logger.error(f"Error updating scraper status: {str(e)}")
@@ -1019,7 +1034,7 @@ def update_scraper_status(
             conn.close()
 
     except Exception as e:
-        logger.error(f"Error updating scraper status: {str(e)}")
+        logger.error(f"Error in update_scraper_status: {str(e)}")
 
 def initialize_inventory_run():
     """Initialize a new inventory update run"""
