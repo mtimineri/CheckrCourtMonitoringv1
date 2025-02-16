@@ -318,7 +318,6 @@ if stats:
     )
 
 
-
 def get_court_sources():
     """Get all court sources with their status"""
     try:
@@ -401,6 +400,18 @@ if sources:
 
     source_df = pd.DataFrame(source_data)
 
+    # Add summary metrics before filters
+    total_sources = len(source_df)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Directory Sources", f"{total_sources:,}")
+    with col2:
+        active_sources = len(source_df[source_df['Status'] == 'Active'])
+        st.metric("Active Sources", f"{active_sources:,}")
+    with col3:
+        total_courts = source_df['Courts Tracked'].sum()
+        st.metric("Total Courts Tracked", f"{total_courts:,}")
+
     # Add filters
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -418,6 +429,10 @@ if sources:
         use_container_width=True,
         hide_index=True
     )
+
+    # Add filtered count
+    if len(filtered_df) != len(source_df):
+        st.caption(f"Showing {len(filtered_df):,} of {len(source_df):,} total sources")
 else:
     st.info("No court sources configured")
 
