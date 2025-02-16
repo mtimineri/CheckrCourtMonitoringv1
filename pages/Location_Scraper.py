@@ -298,8 +298,22 @@ with col1:
                     # Start court discovery process
                     st.info(f"Starting enhanced court discovery for {update_type}...")
 
+                    # Update status for discovery phase
+                    update_scraper_status(
+                        stage="discovery",
+                        message=f"Starting enhanced discovery for {update_type}",
+                        current_source="Fetching court directories"
+                    )
+
                     # Get court directories based on type
                     court_urls = search_court_directories()
+
+                    # Update status with total sources
+                    update_scraper_status(
+                        stage="processing",
+                        total_sources=len(court_urls),
+                        message=f"Found {len(court_urls)} potential court directories"
+                    )
 
                     # Filter URLs based on court type
                     filtered_urls = []
@@ -310,11 +324,39 @@ with col1:
                             filtered_urls.append(url)
 
                     total_courts_found = 0
+                    sources_processed = 0
+
                     for url in filtered_urls:
+                        # Update status for current source
+                        update_scraper_status(
+                            stage="processing",
+                            current_source=url,
+                            sources_processed=sources_processed,
+                            message=f"Processing {url}"
+                        )
+
                         discovered_courts = process_court_page(url)
                         total_courts_found += len(discovered_courts)
+                        sources_processed += 1
+
+                        # Update progress in status
+                        update_scraper_status(
+                            stage="processing",
+                            sources_processed=sources_processed,
+                            new_courts_found=total_courts_found,
+                            message=f"Processed {sources_processed} of {len(filtered_urls)} sources"
+                        )
+
                         status.update(label=f"Processing {url}...")
                         time.sleep(0.1)  # Prevent overwhelming the UI
+
+                    # Final status update
+                    update_scraper_status(
+                        stage="completed",
+                        sources_processed=len(filtered_urls),
+                        new_courts_found=total_courts_found,
+                        message=f"Discovery completed: Found {total_courts_found} courts for {update_type}"
+                    )
 
                     st.success(f"Discovery completed: Found {total_courts_found} courts for {update_type}")
                     # Reset session state to force progress refresh
