@@ -185,7 +185,7 @@ def validate_url(url: str) -> bool:
             return False
 
         # Test URL accessibility with SSL verification disabled
-        downloaded = trafilatura.fetch_url(cleaned_url, ssl_verify=False)
+        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
         if not downloaded:
             logger.warning(f"Unable to access URL: {cleaned_url}")
             return False
@@ -226,7 +226,7 @@ def process_court_page(url: str) -> List[Dict]:
             return []
 
         logger.info(f"Fetching content from {cleaned_url}")
-        downloaded = trafilatura.fetch_url(cleaned_url)
+        downloaded = trafilatura.fetch_url(cleaned_url, verify=False)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
             return []
@@ -483,49 +483,4 @@ Return a JSON object with an array of courts:
 
     except Exception as e:
         logger.error(f"Error discovering courts: {str(e)}")
-        return []
-
-def process_court_page(url: str) -> List[Dict]:
-    """Process a court webpage and extract verified court information"""
-    try:
-        logger.info(f"Starting to process URL: {url}")
-
-        # Clean up the URL - remove spaces and parenthetical text
-        cleaned_url = url.split('(')[0].strip()
-        if not cleaned_url.startswith(('http://', 'https://')):
-            cleaned_url = 'https://' + cleaned_url
-
-        if not validate_url(cleaned_url):
-            logger.warning(f"Skipping invalid or inaccessible URL: {url}")
-            return []
-
-        logger.info(f"Fetching content from {cleaned_url}")
-        downloaded = trafilatura.fetch_url(cleaned_url)
-        if not downloaded:
-            logger.warning(f"Failed to download content from {cleaned_url}")
-            return []
-
-        content = trafilatura.extract(downloaded, include_links=True, include_tables=True)
-        if not content:
-            logger.warning(f"No content extracted from {cleaned_url}")
-            return []
-
-        logger.info(f"Successfully extracted content from {cleaned_url}")
-        courts = discover_courts_from_content(content, cleaned_url)
-
-        # Verify each court before returning
-        verified_courts = []
-        for court in courts:
-            verified_court = verify_court_info(court)
-            if verified_court.get('verified', False):
-                verified_courts.append(verified_court)
-                logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
-            else:
-                logger.warning(f"Court verification failed: {court.get('name', 'Unknown')}")
-
-        logger.info(f"Found {len(verified_courts)} verified courts from {cleaned_url}")
-        return verified_courts
-
-    except Exception as e:
-        logger.error(f"Error processing court page {url}: {str(e)}")
         return []
