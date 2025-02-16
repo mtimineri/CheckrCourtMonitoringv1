@@ -428,10 +428,36 @@ if sources:
     # Add filters
     col1, col2 = st.columns([2, 1])
     with col1:
+        # Get all possible types from the database
+        conn = get_db_connection()
+        jurisdiction_types = []
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT DISTINCT type 
+                    FROM jurisdictions 
+                    UNION 
+                    SELECT 'County' 
+                    WHERE EXISTS (
+                        SELECT 1 FROM jurisdictions WHERE parent_id IS NOT NULL
+                    )
+                    ORDER BY type;
+                """)
+                jurisdiction_types = [row[0].title() for row in cur.fetchall()]
+                cur.close()
+            except Exception as e:
+                logger.error(f"Error getting jurisdiction types: {str(e)}")
+            finally:
+                conn.close()
+
+        if not jurisdiction_types:
+            jurisdiction_types = sorted(source_df['Type'].unique())
+
         selected_types = st.multiselect(
             "Filter by Jurisdiction Type",
-            options=sorted(source_df['Type'].unique()),
-            default=sorted(source_df['Type'].unique()),
+            options=jurisdiction_types,
+            default=jurisdiction_types,
             key="jurisdiction_filter"
         )
 
