@@ -333,7 +333,7 @@ def get_court_sources():
                 WITH source_stats AS (
                     SELECT 
                         cs.id,
-                        COUNT(c.id) as court_count,
+                        COUNT(DISTINCT c.id) as court_count,
                         MAX(c.last_updated) as latest_update
                     FROM court_sources cs
                     LEFT JOIN courts c ON c.jurisdiction_id = cs.jurisdiction_id
