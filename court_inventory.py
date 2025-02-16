@@ -427,57 +427,86 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
         logger.error(f"Error extracting courts from page: {str(e)}")
         return []
 
-def process_court_source(source_id: int, url: str, jurisdiction_id: int) -> Tuple[int, int]:
+def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_id: int) -> Tuple[int, int]:
     """Process a single court source using AI-powered discovery"""
     try:
         from court_ai_discovery import process_court_page
         courts = process_court_page(url)
 
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        conn = get_db_connection()
         cur = conn.cursor()
 
         new_courts = 0
         updated_courts = 0
 
-        for court in courts:
-            if not court.get('verified', False) or court.get('confidence', 0) < 0.7:
-                continue
+        try:
+            for court in courts:
+                if not court.get('verified', False) or court.get('confidence', 0) < 0.7:
+                    continue
 
+                cur.execute("""
+                    INSERT INTO courts (
+                        name, type, url, jurisdiction_id, status, 
+                        address, last_updated
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (name) DO UPDATE
+                    SET type = EXCLUDED.type,
+                        url = EXCLUDED.url,
+                        status = EXCLUDED.status,
+                        address = EXCLUDED.address,
+                        last_updated = CURRENT_TIMESTAMP
+                    RETURNING (xmax = 0) as is_insert
+                """, (
+                    court['name'],
+                    court['type'],
+                    court.get('url'),
+                    jurisdiction_id,
+                    court.get('status', 'Unknown'),
+                    court.get('address')
+                ))
+
+                is_insert = cur.fetchone()[0]
+                if is_insert:
+                    new_courts += 1
+                    logger.info(f"Added new court: {court['name']}")
+                else:
+                    updated_courts += 1
+                    logger.info(f"Updated existing court: {court['name']}")
+
+                # Update the scraper run with court counts
+                cur.execute("""
+                    UPDATE inventory_updates
+                    SET new_courts_found = new_courts_found + %s,
+                        courts_updated = courts_updated + %s
+                    WHERE id = %s
+                """, (
+                    1 if is_insert else 0,
+                    0 if is_insert else 1,
+                    update_id
+                ))
+
+            # Update source last checked timestamp
             cur.execute("""
-                INSERT INTO courts (
-                    name, type, url, jurisdiction_id, status, 
-                    address, last_updated
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (name) DO UPDATE
-                SET type = EXCLUDED.type,
-                    url = EXCLUDED.url,
-                    status = EXCLUDED.status,
-                    address = EXCLUDED.address,
-                    last_updated = CURRENT_TIMESTAMP
-                RETURNING (xmax = 0) as is_insert
-            """, (
-                court['name'],
-                court['type'],
-                court.get('url'),
-                jurisdiction_id,
-                court.get('status', 'Unknown'),
-                court.get('address')
-            ))
+                UPDATE court_sources 
+                SET last_checked = CURRENT_TIMESTAMP,
+                    last_updated = CASE 
+                        WHEN %s > 0 OR %s > 0 THEN CURRENT_TIMESTAMP 
+                        ELSE last_updated 
+                    END
+                WHERE id = %s
+            """, (new_courts, updated_courts, source_id))
 
-            is_insert = cur.fetchone()[0]
-            if is_insert:
-                new_courts += 1
-                logger.info(f"Added new court: {court['name']}")
-            else:
-                updated_courts += 1
-                logger.info(f"Updated existing court: {court['name']}")
+            conn.commit()
+            return new_courts, updated_courts
 
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return new_courts, updated_courts
+        except Exception as e:
+            logger.error(f"Error processing courts from {url}: {str(e)}")
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+            conn.close()
 
     except Exception as e:
         logger.error(f"Error processing source {url}: {str(e)}")
@@ -533,7 +562,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             logger.info(f"Processing source {i}/{total_sources}: {url}")
 
             # Update status with jurisdiction details
-            next_source = "Completion" if i == total_sources else "Next source in queue"
+            next_source = sources[i-1][4] if i < len(sources) else "Completion" #Corrected index
             update_scraper_status(
                 update_id, i, total_sources,
                 'running',
@@ -543,21 +572,10 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
                 stage=f'Checking {j_type} courts'
             )
 
-            new_courts, updated_courts = process_court_source(source_id, url, jurisdiction_id)
+            new_courts, updated_courts = process_court_source(source_id, url, jurisdiction_id, update_id)
             total_new_courts += new_courts
             total_updated_courts += updated_courts
 
-            # Update source last checked timestamp
-            cur.execute("""
-                UPDATE court_sources 
-                SET last_checked = CURRENT_TIMESTAMP,
-                    last_updated = CASE 
-                        WHEN %s > 0 OR %s > 0 THEN CURRENT_TIMESTAMP 
-                        ELSE last_updated 
-                    END
-                WHERE id = %s
-            """, (new_courts, updated_courts, source_id))
-            conn.commit()
 
         # Update final status
         completion_message = (
@@ -869,45 +887,89 @@ def return_db_connection(conn):
 
 def update_scraper_status(update_id: int, sources_processed: int, total_sources: int,
                          status: str, message: str, current_source: str = None,
-                         next_source: str = None, stage: str = None):
-    """Update the status of the current inventory update"""
+                         next_source: str = None, stage: str = None) -> None:
+    """Update the status of an inventory update run"""
     conn = get_db_connection()
-    if conn is None:
+    if not conn:
         logger.error("Failed to get database connection for status update")
         return
 
     cur = conn.cursor()
     try:
-        update_fields = {
-            'sources_processed': sources_processed,
-            'total_sources': total_sources,
-            'status': status,
-            'message': message,
-            'current_source': current_source,
-            'next_source': next_source,
-            'stage': stage
-        }
-
-        # Add completed_at if status is completed or error
-        if status in ['completed', 'error']:
-            update_fields['completed_at'] = 'CURRENT_TIMESTAMP'
-            update_fields['end_time'] = 'CURRENT_TIMESTAMP'
-
-        # Build the SQL update statement dynamically
-        set_clause = ', '.join([f"{k} = %s" for k in update_fields.keys()])
-        values = list(update_fields.values())
-
-        cur.execute(f"""
-            UPDATE inventory_updates 
-            SET {set_clause}
+        # Update the inventory update record
+        cur.execute("""
+            UPDATE inventory_updates
+            SET sources_processed = %s,
+                total_sources = %s,
+                status = %s,
+                message = %s,
+                current_source = %s,
+                next_source = %s,
+                stage = %s,
+                completed_at = CASE 
+                    WHEN %s IN ('completed', 'error') THEN CURRENT_TIMESTAMP 
+                    ELSE completed_at 
+                END
             WHERE id = %s
-        """, values + [update_id])
+        """, (
+            sources_processed, total_sources, status, message,
+            current_source, next_source, stage, status, update_id
+        ))
+
+        # Add a log entry
+        cur.execute("""
+            INSERT INTO scraper_logs (
+                scraper_run_id, level, message
+            ) VALUES (%s, %s, %s)
+        """, (
+            update_id,
+            'INFO' if status != 'error' else 'ERROR',
+            message
+        ))
 
         conn.commit()
         logger.info(f"Updated scraper status: {message}")
+
     except Exception as e:
         logger.error(f"Error updating scraper status: {str(e)}")
         conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def initialize_inventory_run() -> Optional[int]:
+    """Initialize a new inventory update run"""
+    conn = get_db_connection()
+    if not conn:
+        return None
+
+    cur = conn.cursor()
+    try:
+        # Insert new run record
+        cur.execute("""
+            INSERT INTO inventory_updates (
+                started_at,
+                status,
+                total_sources,
+                sources_processed,
+                new_courts_found,
+                courts_updated,
+                stage
+            ) VALUES (
+                CURRENT_TIMESTAMP,
+                'running',
+                0, 0, 0, 0,
+                'Initializing'
+            ) RETURNING id
+        """)
+        update_id = cur.fetchone()[0]
+        conn.commit()
+        return update_id
+
+    except Exception as e:
+        logger.error(f"Error initializing inventory run: {str(e)}")
+        conn.rollback()
+        return None
     finally:
         cur.close()
         conn.close()
@@ -918,33 +980,6 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"Error connecting to database: {str(e)}")
         return None
-
-def initialize_inventory_run() -> Optional[int]:
-    """Initialize a new inventory update run"""
-    conn = get_db_connection()
-    if conn is None:
-        logger.error("Failed to get database connection for inventory initialization")
-        return None
-
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO inventory_updates 
-                (started_at, status, stage)
-            VALUES 
-                (CURRENT_TIMESTAMP, 'running', 'Initializing')
-            RETURNING id
-        """)
-        update_id = cur.fetchone()[0]
-        conn.commit()
-        return update_id
-    except Exception as e:
-        logger.error(f"Error initializing inventory run: {str(e)}")
-        conn.rollback()
-        return None
-    finally:
-        cur.close()
-        conn.close()
 
 if __name__ == "__main__":
     try:
