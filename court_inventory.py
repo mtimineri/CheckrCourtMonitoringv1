@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 import re
 import requests
 from bs4 import BeautifulSoup
-from court_ai_discovery import initialize_ai_discovery, search_court_directories
+from court_ai_discovery import initialize_ai_discovery, search_court_directories, discover_courts_from_content, verify_court_info
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -171,6 +171,7 @@ def initialize_database():
                 lat FLOAT,
                 lon FLOAT,
                 address TEXT,
+                contact_info JSONB,
                 image_url TEXT,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -565,7 +566,7 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
         return []
 
 def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_id: int) -> Tuple[int, int]:
-    """Process a single court source"""
+    """Process a single court source using AI-powered discovery"""
     logger.info(f"Starting to process source ID {source_id} with URL: {url}")
     try:
         # Use requests instead of trafilatura for more reliable fetching
@@ -573,9 +574,9 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
         response.raise_for_status()
         content = response.text
 
-        # Extract courts from the page content
-        courts = extract_courts_from_page(content, url)
-        logger.info(f"Retrieved {len(courts)} courts from {url}")
+        # Extract courts using AI-powered discovery
+        courts = discover_courts_from_content(content, url)
+        logger.info(f"AI Discovery retrieved {len(courts)} courts from {url}")
 
         if not courts:
             logger.warning(f"No courts found at {url}")
@@ -592,33 +593,43 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
 
         try:
             for court in courts:
+                # Verify court information using AI
+                verified_court = verify_court_info(court)
+                if not verified_court.get('verified', False):
+                    logger.warning(f"Court verification failed for {court.get('name', 'Unknown')}")
+                    continue
+
                 cur.execute("""
                     INSERT INTO courts (
                         name, type, url, jurisdiction_id, status, 
-                        last_updated
+                        address, contact_info, last_updated
                     )
-                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (name) DO UPDATE
                     SET type = EXCLUDED.type,
                         url = EXCLUDED.url,
                         status = EXCLUDED.status,
+                        address = EXCLUDED.address,
+                        contact_info = EXCLUDED.contact_info,
                         last_updated = CURRENT_TIMESTAMP
                     RETURNING (xmax = 0) as is_insert;
                 """, (
-                    court['name'],
-                    court['type'],
-                    court.get('url'),
+                    verified_court['name'],
+                    verified_court['type'],
+                    verified_court.get('url'),
                     jurisdiction_id,
-                    court.get('status', 'Unknown')
+                    verified_court['status'],
+                    verified_court.get('address'),
+                    json.dumps(verified_court.get('contact_info', {}))
                 ))
 
                 is_insert = cur.fetchone()[0]
                 if is_insert:
                     new_courts += 1
-                    logger.info(f"Added new court: {court['name']}")
+                    logger.info(f"Added new court: {verified_court['name']}")
                 else:
                     updated_courts += 1
-                    logger.info(f"Updated existing court: {court['name']}")
+                    logger.info(f"Updated existing court: {verified_court['name']}")
 
             # Update the scraper run status
             cur.execute("""
