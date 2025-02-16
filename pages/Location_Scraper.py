@@ -40,6 +40,80 @@ st.set_page_config(
 st.title("Court Location Scraper")
 st.markdown("Monitor and update the court location inventory")
 
+# Create a placeholder for the status section that will update automatically
+status_placeholder = st.empty()
+
+def display_status_section():
+    """Display the status section with current information"""
+    status = get_inventory_status()
+    if status and status.get('status') == 'running':
+        with status_placeholder.container():
+            st.subheader("Current Update Status")
+
+            # Create metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                total = status.get('total_sources', 0)
+                processed = status.get('sources_processed', 0)
+                progress = (processed / total * 100) if total > 0 else 0
+                st.metric(
+                    "Update Progress",
+                    f"{progress:.1f}%",
+                    delta=f"{processed} of {total} sources"
+                )
+
+            with col2:
+                st.metric(
+                    "Status",
+                    status.get('status', 'Unknown').title(),
+                    delta=status.get('stage', '')
+                )
+
+            with col3:
+                st.metric(
+                    "Courts Found",
+                    status.get('new_courts_found', 0),
+                    delta=f"+{status.get('courts_updated', 0)} updated"
+                )
+
+            # Show current activity
+            if status.get('current_source'):
+                st.info(f"Currently processing: {status.get('current_source', 'Unknown')}")
+            if status.get('message'):
+                st.write(status.get('message'))
+
+    else:
+        # Show regular status display for non-running states
+        with status_placeholder.container():
+            if status:
+                st.subheader("Last Update Status")
+
+                # Create metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    total = status.get('total_sources', 0)
+                    processed = status.get('sources_processed', 0)
+                    progress = (processed / total * 100) if total > 0 else 0
+                    st.metric(
+                        "Update Progress",
+                        f"{progress:.1f}%",
+                        delta=f"{processed} of {total} sources"
+                    )
+
+                with col2:
+                    st.metric(
+                        "Status",
+                        status.get('status', 'Unknown').title(),
+                        delta=status.get('stage', '')
+                    )
+
+                with col3:
+                    st.metric(
+                        "Courts Found",
+                        status.get('new_courts_found', 0),
+                        delta=f"+{status.get('courts_updated', 0)} updated"
+                    )
+
 def get_inventory_status():
     """Get the latest inventory update status"""
     conn = None
@@ -108,6 +182,7 @@ def get_inventory_status():
         if conn:
             conn.close()
 
+
 # Add update button and handle update process
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -143,7 +218,6 @@ with col1:
 
                 # Force refresh of status
                 st.session_state.update_running = True
-                st.rerun()
             else:
                 error_msg = "Invalid response from update process"
                 logger.error(error_msg)
@@ -161,89 +235,17 @@ with col1:
 if 'update_running' not in st.session_state:
     st.session_state.update_running = False
 
-# Get current status
-status = get_inventory_status()
-
-# Check if an update is running
-if status and status.get('status') == 'running':
-    st.session_state.update_running = True
-elif status and status.get('status') in ['completed', 'error']:
-    st.session_state.update_running = False
-
-# Display status with auto-refresh
-if st.session_state.update_running and status:  # Only show if status exists
-    st.empty()  # Clear previous content
-    status_container = st.container()
-
-    with status_container:
-        st.subheader("Current Update Status")
-
-        # Create metrics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            total = status.get('total_sources', 0)
-            processed = status.get('sources_processed', 0)
-            progress = (processed / total * 100) if total > 0 else 0
-            st.metric(
-                "Update Progress",
-                f"{progress:.1f}%",
-                delta=f"{processed} of {total} sources"
-            )
-
-        with col2:
-            st.metric(
-                "Status",
-                status.get('status', 'Unknown').title(),
-                delta=status.get('stage', '')
-            )
-
-        with col3:
-            st.metric(
-                "Courts Found",
-                status.get('new_courts_found', 0),
-                delta=f"+{status.get('courts_updated', 0)} updated"
-            )
-
-        # Show current activity
-        if status.get('current_source'):
-            st.info(f"Currently processing: {status.get('current_source', 'Unknown')}")
-        if status.get('message'):
-            st.write(status.get('message'))
-
-    # Auto-refresh every 5 seconds while update is running
-    time.sleep(5)
-    st.rerun()
-
+# Update status section every second when running
+if st.session_state.update_running:
+    status = get_inventory_status()
+    if status and status.get('status') == 'running':
+        display_status_section()
+    else:
+        st.session_state.update_running = False
+        display_status_section()
 else:
-    # Show regular status display for non-running states
-    if status:
-        st.subheader("Last Update Status")
+    display_status_section()
 
-        # Create metrics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            total = status.get('total_sources', 0)
-            processed = status.get('sources_processed', 0)
-            progress = (processed / total * 100) if total > 0 else 0
-            st.metric(
-                "Update Progress",
-                f"{progress:.1f}%",
-                delta=f"{processed} of {total} sources"
-            )
-
-        with col2:
-            st.metric(
-                "Status",
-                status.get('status', 'Unknown').title(),
-                delta=status.get('stage', '')
-            )
-
-        with col3:
-            st.metric(
-                "Courts Found",
-                status.get('new_courts_found', 0),
-                delta=f"+{status.get('courts_updated', 0)} updated"
-            )
 
 # Display court statistics
 def get_court_stats():
@@ -314,6 +316,7 @@ if stats:
         use_container_width=True,
         hide_index=True
     )
+
 
 
 def get_court_sources():
