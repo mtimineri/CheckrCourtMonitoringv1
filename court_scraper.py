@@ -259,9 +259,14 @@ def update_database(courts_data: List[Dict]) -> None:
         return
 
     try:
-        logger.info(f"Updating database with {len(courts_data)} courts")
+        logger.info(f"Starting database update with {len(courts_data)} courts")
         conn = get_db_connection()
+        if conn is None:
+            logger.error("Failed to get database connection")
+            return
+
         cur = conn.cursor()
+        courts_updated = 0
 
         for court in courts_data:
             try:
@@ -275,6 +280,10 @@ def update_database(courts_data: List[Dict]) -> None:
                 lat_value = float(lat) if lat is not None else None
                 lon_value = float(lon) if lon is not None else None
 
+                # Log the court data being processed
+                logger.info(f"Processing court: {court.get('name', 'Unknown')}")
+                logger.debug(f"Court data: {court}")
+
                 cur.execute("""
                     UPDATE courts SET
                         status = %s,
@@ -286,6 +295,7 @@ def update_database(courts_data: List[Dict]) -> None:
                         maintenance_end = %s,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE id = %s
+                    RETURNING id
                 """, (
                     court['status'],
                     lat_value,
@@ -296,18 +306,28 @@ def update_database(courts_data: List[Dict]) -> None:
                     maintenance_end,
                     court['id']
                 ))
-                logger.debug(f"Updated court {court['id']}: {court.get('name', 'Unknown')}")
+
+                if cur.fetchone():
+                    courts_updated += 1
+                    logger.info(f"Successfully updated court {court['id']}: {court.get('name', 'Unknown')}")
+                else:
+                    logger.warning(f"No court found with ID {court['id']}: {court.get('name', 'Unknown')}")
+
             except Exception as e:
                 logger.error(f"Error updating court {court.get('id')}: {str(e)}")
                 continue  # Skip this court but continue with others
 
         conn.commit()
-        logger.info("Database update completed successfully")
+        logger.info(f"Database update completed successfully. Updated {courts_updated} courts")
         cur.close()
-        conn.close()
+        return_db_connection(conn)
 
     except Exception as e:
         logger.error(f"Error updating database: {str(e)}")
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            return_db_connection(conn)
         raise
 
 if __name__ == "__main__":
