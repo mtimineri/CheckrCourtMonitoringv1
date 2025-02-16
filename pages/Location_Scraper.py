@@ -8,6 +8,7 @@ import logging
 import os
 import psycopg2
 from court_data import get_db_connection, get_court_types, get_court_statuses
+from court_source_discovery import update_court_sources
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -230,6 +231,18 @@ with col1:
 
     if st.button("Update Court Inventory Now", key="update_inventory_button"):
         start_update_process(update_type)
+
+with col2:
+    if st.button("Update Court Sources", key="update_sources_button"):
+        try:
+            with st.spinner("Updating court directory sources..."):
+                result = update_court_sources()
+                if result['status'] == 'completed':
+                    st.success(f"Court sources updated successfully! Added {result['new_sources']} new sources and updated {result['updated_sources']} existing sources.")
+                else:
+                    st.error(f"Error updating court sources: {result.get('message', 'Unknown error')}")
+        except Exception as e:
+            st.error(f"Error updating court sources: {str(e)}")
 
 # Initialize session state for progress tracking
 if 'update_running' not in st.session_state:
