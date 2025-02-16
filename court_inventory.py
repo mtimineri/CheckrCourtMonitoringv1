@@ -555,6 +555,10 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
         return {'status': 'error', 'message': 'Failed to initialize inventory run'}
 
     conn = get_db_connection()
+    if not conn:
+        logger.error("Failed to get database connection")
+        return {'status': 'error', 'message': 'Failed to get database connection'}
+
     cur = conn.cursor()
 
     try:
@@ -581,6 +585,19 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
 
         sources = cur.fetchall()
         total_sources = len(sources)
+        logger.info(f"Found {total_sources} sources to process")
+
+        if total_sources == 0:
+            logger.warning("No sources found to process")
+            return {
+                'status': 'completed',
+                'total_sources': 0,
+                'new_courts': 0,
+                'updated_courts': 0,
+                'court_type': court_type,
+                'message': 'No sources found to process'
+            }
+
         total_new_courts = 0
         total_updated_courts = 0
 
@@ -632,7 +649,8 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             'total_sources': total_sources,
             'new_courts': total_new_courts,
             'updated_courts': total_updated_courts,
-            'court_type': court_type
+            'court_type': court_type,
+            'message': completion_message
         }
 
     except Exception as e:
@@ -640,12 +658,15 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
         logger.error(error_message)
         if update_id:
             update_scraper_status(
-                update_id, 0, total_sources,
+                update_id, 0, total_sources if 'total_sources' in locals() else 0,
                 'error', error_message,
                 current_source='Error',
                 stage='Failed'
             )
-        raise
+        return {
+            'status': 'error',
+            'message': error_message
+        }
     finally:
         cur.close()
         conn.close()
@@ -801,7 +822,8 @@ def initialize_base_courts() -> None:
                 ) VALUES (
                     %s,
                     'Bankruptcy Courts',
-                    `%s,
+                    %s,
+                    %s,
                     'Open',
                     %s,
                     'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
@@ -816,7 +838,8 @@ def initialize_base_courts() -> None:
                     """, (
                 f"U.S. Bankruptcy Court for the {district}",
                 url,
-                federal_id,                f"Federal Courthouse, {location}",
+                federal_id,
+                f"Federal Courthouse, {location}",
                 lat,
                 lon
             ))
@@ -847,13 +870,15 @@ def initialize_base_courts() -> None:
             """, (
                 f"{county_name} Superior Court",
                 county_id,
-                f"County Courthouse, {county_name}, {state_name}"            ))
+                f"County Courthouse, {county_name}, {state_name}"
+            ))
 
             # Family Court
             cur.execute("""
                 INSERT INTO courts (
                     name, type, jurisdiction_id, status,
-                    address, image_url, lat, lon                ) VALUES (
+                    address, image_url, lat, lon
+                ) VALUES (
                     %s, 'County Family Courts', %s, 'Open',
                     %s, 'https://images.unsplash.com/photo-1564595686486-c6e5cbdbe12c',
                     NULL, NULL
