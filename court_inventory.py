@@ -295,55 +295,40 @@ def initialize_court_sources() -> None:
 
         # Get AI-generated court directory URLs
         from court_ai_discovery import search_court_directories
+        logger.info("Searching for court directory URLs...")
         directory_urls = search_court_directories()
 
         if not directory_urls:
             logger.warning("No court directory URLs discovered")
-            return
+            # Add default federal courts website as fallback
+            directory_urls = ["https://www.uscourts.gov"]
 
         # Add discovered sources
+        sources_added = 0
         for url in directory_urls:
-            if isinstance(url, str):  # Ensure URL is a string
-                try:
-                    cur.execute("""
-                        INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                        VALUES (%s, %s, true)
-                        ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                        SET is_active = true, last_checked = CURRENT_TIMESTAMP
-                    """, (federal_id, url))
-                except Exception as e:
-                    logger.error(f"Error adding court source {url}: {str(e)}")
-                    continue
-            elif isinstance(url, dict):
-                try:
-                    # Extract URL from dictionary format
-                    if 'url' in url:
-                        source_url = url['url']
-                        cur.execute("""
-                            INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
-                            VALUES (%s, %s, true)
-                            ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
-                            SET is_active = true, last_checked = CURRENT_TIMESTAMP
-                        """, (federal_id, source_url))
-                except Exception as e:
-                    logger.error(f"Error adding court source from dict {url}: {str(e)}")
-                    continue
+            try:
+                cur.execute("""
+                    INSERT INTO court_sources (jurisdiction_id, source_url, is_active)
+                    VALUES (%s, %s, true)
+                    ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
+                    SET is_active = true, last_checked = CURRENT_TIMESTAMP
+                """, (federal_id, url))
+                sources_added += 1
+                logger.info(f"Added/updated court source: {url}")
+            except Exception as e:
+                logger.error(f"Error adding court source {url}: {str(e)}")
+                continue
 
         # Add specific state court websites
-        specific_state_courts = [
-            ('New York', 'https://www.nycourts.gov'),
+        state_courts = [
             ('California', 'https://www.courts.ca.gov'),
+            ('New York', 'https://www.nycourts.gov'),
             ('Texas', 'https://www.txcourts.gov'),
             ('Florida', 'https://www.flcourts.org'),
-            ('Illinois', 'https://www.illinoiscourts.gov'),
-            ('Pennsylvania', 'https://www.pacourts.us'),
-            ('Ohio', 'https://www.supremecourt.ohio.gov'),
-            ('Michigan', 'https://courts.michigan.gov'),
-            ('Georgia', 'https://www.gasupreme.us'),
-            ('North Carolina', 'https://www.nccourts.gov')
+            ('Illinois', 'https://www.illinoiscourts.gov')
         ]
 
-        for state_name, url in specific_state_courts:
+        for state_name, url in state_courts:
             try:
                 cur.execute("""
                     SELECT id FROM jurisdictions WHERE name = %s AND type = 'state'
@@ -357,12 +342,14 @@ def initialize_court_sources() -> None:
                         ON CONFLICT (jurisdiction_id, source_url) DO UPDATE 
                         SET is_active = true, last_checked = CURRENT_TIMESTAMP
                     """, (state_id, url))
+                    sources_added += 1
+                    logger.info(f"Added/updated state court source for {state_name}: {url}")
             except Exception as e:
                 logger.error(f"Error adding state court source for {state_name}: {str(e)}")
                 continue
 
         conn.commit()
-        logger.info("Successfully initialized court sources with AI assistance")
+        logger.info(f"Successfully initialized {sources_added} court sources")
 
     except Exception as e:
         logger.error(f"Error initializing court sources: {str(e)}")
@@ -463,19 +450,31 @@ def extract_courts_from_page(content: str, base_url: str) -> List[Dict]:
 
 def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_id: int) -> Tuple[int, int]:
     """Process a single court source using AI-powered discovery"""
+    logger.info(f"Starting to process source ID {source_id} with URL: {url}")
     try:
         from court_ai_discovery import process_court_page
+
+        # Log before calling process_court_page
+        logger.info(f"Calling process_court_page for URL: {url}")
         courts = process_court_page(url)
+        logger.info(f"Retrieved {len(courts) if courts else 0} courts from {url}")
 
         conn = get_db_connection()
-        cur = conn.cursor()
+        if not conn:
+            logger.error(f"Failed to get database connection for source {source_id}")
+            return 0, 0
 
+        cur = conn.cursor()
         new_courts = 0
         updated_courts = 0
 
         try:
             for court in courts:
+                # Log court data for debugging
+                logger.info(f"Processing court: {court.get('name', 'Unknown')}")
+
                 if not court.get('verified', False) or court.get('confidence', 0) < 0.7:
+                    logger.warning(f"Skipping unverified court: {court.get('name', 'Unknown')}")
                     continue
 
                 cur.execute("""
@@ -490,7 +489,7 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
                         status = EXCLUDED.status,
                         address = EXCLUDED.address,
                         last_updated = CURRENT_TIMESTAMP
-                    RETURNING (xmax = 0) as is_insert
+                    RETURNING (xmax = 0) as is_insert;
                 """, (
                     court['name'],
                     court['type'],
@@ -508,19 +507,15 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
                     updated_courts += 1
                     logger.info(f"Updated existing court: {court['name']}")
 
-                # Update the scraper run with court counts
-                cur.execute("""
-                    UPDATE inventory_updates
-                    SET new_courts_found = new_courts_found + %s,
-                        courts_updated = courts_updated + %s
-                    WHERE id = %s
-                """, (
-                    1 if is_insert else 0,
-                    0 if is_insert else 1,
-                    update_id
-                ))
+            # Update the scraper run status
+            cur.execute("""
+                UPDATE inventory_updates
+                SET new_courts_found = new_courts_found + %s,
+                    courts_updated = courts_updated + %s
+                WHERE id = %s
+            """, (new_courts, updated_courts, update_id))
 
-            # Update source last checked timestamp
+            # Update source last_checked timestamp
             cur.execute("""
                 UPDATE court_sources 
                 SET last_checked = CURRENT_TIMESTAMP,
@@ -532,6 +527,7 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
             """, (new_courts, updated_courts, source_id))
 
             conn.commit()
+            logger.info(f"Successfully processed source {source_id}: {new_courts} new, {updated_courts} updated")
             return new_courts, updated_courts
 
         except Exception as e:
@@ -548,7 +544,7 @@ def process_court_source(source_id: int, url: str, jurisdiction_id: int, update_
 
 def update_court_inventory(court_type: str = 'all') -> Dict:
     """Update the court inventory from all active sources"""
-    logger.info("Starting court inventory update...")
+    logger.info(f"Starting court inventory update for type: {court_type}")
     update_id = initialize_inventory_run()
     if update_id is None:
         logger.error("Failed to initialize inventory run")
@@ -564,28 +560,51 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
     try:
         # Get active sources that need updating based on court type
         if court_type == 'all':
+            # Modified query to check conditions
             cur.execute("""
-                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name 
+                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name,
+                       cs.last_checked, cs.update_frequency
                 FROM court_sources cs
                 JOIN jurisdictions j ON cs.jurisdiction_id = j.id
                 WHERE cs.is_active = true
-                AND (cs.last_checked IS NULL 
-                     OR cs.last_checked < CURRENT_TIMESTAMP - cs.update_frequency)
+                  AND (cs.last_checked IS NULL 
+                       OR cs.last_checked < CURRENT_TIMESTAMP - COALESCE(cs.update_frequency, INTERVAL '24 hours'));
             """)
+            logger.info("Executing query for all court types")
         else:
             cur.execute("""
-                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name 
+                SELECT cs.id, cs.jurisdiction_id, cs.source_url, j.type, j.name,
+                       cs.last_checked, cs.update_frequency
                 FROM court_sources cs
                 JOIN jurisdictions j ON cs.jurisdiction_id = j.id
                 WHERE cs.is_active = true
-                AND j.type = %s
-                AND (cs.last_checked IS NULL 
-                     OR cs.last_checked < CURRENT_TIMESTAMP - cs.update_frequency)
+                  AND j.type = %s
+                  AND (cs.last_checked IS NULL 
+                       OR cs.last_checked < CURRENT_TIMESTAMP - COALESCE(cs.update_frequency, INTERVAL '24 hours'));
             """, (court_type,))
+            logger.info(f"Executing query for court type: {court_type}")
 
         sources = cur.fetchall()
         total_sources = len(sources)
+
+        # Log detailed source information
         logger.info(f"Found {total_sources} sources to process")
+        if sources:
+            for source in sources[:5]:  # Log first 5 sources for debugging
+                logger.info(f"Source details: ID={source[0]}, Type={source[3]}, Name={source[4]}, URL={source[2]}")
+        else:
+            # Log current time and sample source data for debugging
+            cur.execute("""
+                SELECT COUNT(*), 
+                       MIN(last_checked), 
+                       MAX(last_checked),
+                       COUNT(CASE WHEN is_active = true THEN 1 END)
+                FROM court_sources;
+            """)
+            stats = cur.fetchone()
+            logger.info(f"Debug - Source stats: Total={stats[0]}, "
+                       f"Earliest check={stats[1]}, Latest check={stats[2]}, "
+                       f"Active={stats[3]}")
 
         if total_sources == 0:
             logger.warning("No sources found to process")
@@ -609,7 +628,7 @@ def update_court_inventory(court_type: str = 'all') -> Dict:
             stage='Starting inventory update'
         )
 
-        for i, (source_id, jurisdiction_id, url, j_type, j_name) in enumerate(sources, 1):
+        for i, (source_id, jurisdiction_id, url, j_type, j_name, last_checked, update_freq) in enumerate(sources, 1):
             logger.info(f"Processing source {i}/{total_sources}: {url}")
 
             # Update status with jurisdiction details
@@ -778,8 +797,7 @@ def initialize_base_courts() -> None:
         for name, location, lat, lon in district_courts:
             url = f"https://www.{name.lower().replace(' ', '')}.uscourts.gov"
             cur.execute("""
-                INSERT INTO courts (
-                    name, type, url, jurisdiction_id, status,
+                INSERT INTO courts (name, type, url, jurisdiction_id, status,
                     address, image_url, lat, lon
                 ) VALUES (
                     %s,
@@ -794,7 +812,7 @@ def initialize_base_courts() -> None:
                 ) ON CONFLICT (name) DO UPDATE SET
                     url = EXCLUDED.url,
                     status = EXCLUDED.status,
-                    address = EXCLUDED.address,                    lat = EXCLUDED.lat,
+                    address = EXCLUDED.address,                    lat = EXCLUDed.lat,
                     lon = EXCLUDED.lon
             """, (
                 f"U.S. District Court for the {name}",

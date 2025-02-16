@@ -22,6 +22,74 @@ logger = logging.getLogger(__name__)
 # do not change this unless explicitly requested by the user
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+def search_court_directories() -> List[str]:
+    """Use OpenAI to generate a list of potential court directory URLs"""
+    try:
+        system_prompt = """You are a court information specialist. Generate a list of valid, accessible court directory URLs for the United States. Return ONLY an array of direct URLs in JSON format, like this:
+{
+    "urls": [
+        "https://www.uscourts.gov",
+        "https://www.supremecourt.gov"
+    ]
+}
+
+Focus on:
+1. Main federal court websites
+2. State supreme court websites
+3. Major district court portals
+4. Bankruptcy court directories
+
+Rules:
+1. Use only .gov or .us domains when possible
+2. Ensure URLs are direct links (no search pages)
+3. Include only base domains, no query parameters
+4. No parenthetical text or spaces in URLs"""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Generate a list of valid US court directory URLs"}
+                ],
+                response_format={"type": "json_object"}
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            urls = result.get('urls', [])
+
+            # Clean and validate URLs
+            valid_urls = []
+            for url in urls:
+                if isinstance(url, str):  # Ensure URL is a string
+                    cleaned_url = clean_and_validate_url(url)
+                    if cleaned_url:
+                        valid_urls.append(cleaned_url)
+                        logger.info(f"Added valid URL: {cleaned_url}")
+                else:
+                    logger.warning(f"Skipping invalid URL format: {url}")
+                    continue
+
+            logger.info(f"Found {len(valid_urls)} valid court directory URLs")
+            return valid_urls
+
+        except Exception as e:
+            logger.error(f"Error in OpenAI API call: {str(e)}")
+            # Return a default list of well-known court URLs as fallback
+            default_urls = [
+                "https://www.uscourts.gov",
+                "https://www.supremecourt.gov",
+                "https://www.ca1.uscourts.gov",
+                "https://www.ca2.uscourts.gov",
+                "https://www.ca3.uscourts.gov"
+            ]
+            logger.info("Using default court URLs as fallback")
+            return default_urls
+
+    except Exception as e:
+        logger.error(f"Error searching court directories: {str(e)}")
+        return []
+
 def store_discovered_court(court_data: Dict) -> bool:
     """Store discovered court in the database"""
     try:
@@ -143,6 +211,51 @@ def clean_and_validate_url(url: str) -> Optional[str]:
     except Exception:
         return None
 
+def process_court_page(url: str) -> List[Dict]:
+    """Process a court webpage and extract verified court information"""
+    try:
+        logger.info(f"Starting to process URL: {url}")
+
+        # Clean up the URL - remove spaces and parenthetical text
+        cleaned_url = url.split('(')[0].strip()
+        if not cleaned_url.startswith(('http://', 'https://')):
+            cleaned_url = 'https://' + cleaned_url
+
+        if not validate_url(cleaned_url):
+            logger.warning(f"Skipping invalid or inaccessible URL: {url}")
+            return []
+
+        logger.info(f"Fetching content from {cleaned_url}")
+        downloaded = trafilatura.fetch_url(cleaned_url)
+        if not downloaded:
+            logger.warning(f"Failed to download content from {cleaned_url}")
+            return []
+
+        content = trafilatura.extract(downloaded, include_links=True, include_tables=True)
+        if not content:
+            logger.warning(f"No content extracted from {cleaned_url}")
+            return []
+
+        logger.info(f"Successfully extracted content from {cleaned_url}")
+        courts = discover_courts_from_content(content, cleaned_url)
+
+        # Verify each court before returning
+        verified_courts = []
+        for court in courts:
+            verified_court = verify_court_info(court)
+            if verified_court.get('verified', False):
+                verified_courts.append(verified_court)
+                logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
+            else:
+                logger.warning(f"Court verification failed: {court.get('name', 'Unknown')}")
+
+        logger.info(f"Found {len(verified_courts)} verified courts from {cleaned_url}")
+        return verified_courts
+
+    except Exception as e:
+        logger.error(f"Error processing court page {url}: {str(e)}")
+        return []
+
 def search_court_directories() -> List[str]:
     """Use OpenAI to generate a list of potential court directory URLs"""
     try:
@@ -166,31 +279,46 @@ Rules:
 3. Include only base domains, no query parameters
 4. No parenthetical text or spaces in URLs"""
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Generate a list of valid US court directory URLs"}
-            ],
-            response_format={"type": "json_object"}
-        )
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Generate a list of valid US court directory URLs"}
+                ],
+                response_format={"type": "json_object"}
+            )
 
-        result = json.loads(response.choices[0].message.content)
-        urls = result.get('urls', [])
+            result = json.loads(response.choices[0].message.content)
+            urls = result.get('urls', [])
 
-        # Clean and validate URLs
-        valid_urls = []
-        for url in urls:
-            if isinstance(url, str):  # Ensure URL is a string
-                cleaned_url = clean_and_validate_url(url)
-                if cleaned_url:
-                    valid_urls.append(cleaned_url)
-            else:
-                logger.warning(f"Skipping invalid URL format: {url}")
-                continue
+            # Clean and validate URLs
+            valid_urls = []
+            for url in urls:
+                if isinstance(url, str):  # Ensure URL is a string
+                    cleaned_url = clean_and_validate_url(url)
+                    if cleaned_url:
+                        valid_urls.append(cleaned_url)
+                        logger.info(f"Added valid URL: {cleaned_url}")
+                else:
+                    logger.warning(f"Skipping invalid URL format: {url}")
+                    continue
 
-        logger.info(f"Found {len(valid_urls)} valid court directory URLs")
-        return valid_urls
+            logger.info(f"Found {len(valid_urls)} valid court directory URLs")
+            return valid_urls
+
+        except Exception as e:
+            logger.error(f"Error in OpenAI API call: {str(e)}")
+            # Return a default list of well-known court URLs as fallback
+            default_urls = [
+                "https://www.uscourts.gov",
+                "https://www.supremecourt.gov",
+                "https://www.ca1.uscourts.gov",
+                "https://www.ca2.uscourts.gov",
+                "https://www.ca3.uscourts.gov"
+            ]
+            logger.info("Using default court URLs as fallback")
+            return default_urls
 
     except Exception as e:
         logger.error(f"Error searching court directories: {str(e)}")
@@ -360,6 +488,8 @@ Return a JSON object with an array of courts:
 def process_court_page(url: str) -> List[Dict]:
     """Process a court webpage and extract verified court information"""
     try:
+        logger.info(f"Starting to process URL: {url}")
+
         # Clean up the URL - remove spaces and parenthetical text
         cleaned_url = url.split('(')[0].strip()
         if not cleaned_url.startswith(('http://', 'https://')):
@@ -369,6 +499,7 @@ def process_court_page(url: str) -> List[Dict]:
             logger.warning(f"Skipping invalid or inaccessible URL: {url}")
             return []
 
+        logger.info(f"Fetching content from {cleaned_url}")
         downloaded = trafilatura.fetch_url(cleaned_url)
         if not downloaded:
             logger.warning(f"Failed to download content from {cleaned_url}")
@@ -379,19 +510,22 @@ def process_court_page(url: str) -> List[Dict]:
             logger.warning(f"No content extracted from {cleaned_url}")
             return []
 
+        logger.info(f"Successfully extracted content from {cleaned_url}")
         courts = discover_courts_from_content(content, cleaned_url)
-        stored_courts = []
 
+        # Verify each court before returning
+        verified_courts = []
         for court in courts:
-            if store_discovered_court(court):
-                stored_courts.append(court)
-                logger.info(f"Successfully stored court: {court['name']}")
+            verified_court = verify_court_info(court)
+            if verified_court.get('verified', False):
+                verified_courts.append(verified_court)
+                logger.info(f"Verified court: {verified_court.get('name', 'Unknown')}")
             else:
-                logger.error(f"Failed to store court: {court['name']}")
+                logger.warning(f"Court verification failed: {court.get('name', 'Unknown')}")
 
-        logger.info(f"Found and stored {len(stored_courts)} verified courts from {cleaned_url}")
-        return stored_courts
+        logger.info(f"Found {len(verified_courts)} verified courts from {cleaned_url}")
+        return verified_courts
 
     except Exception as e:
-        logger.error(f"Error processing court page: {str(e)}")
+        logger.error(f"Error processing court page {url}: {str(e)}")
         return []

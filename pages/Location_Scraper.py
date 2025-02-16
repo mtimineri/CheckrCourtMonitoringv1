@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
-from court_inventory import update_court_inventory, update_scraper_status
+from court_inventory import update_court_inventory, update_scraper_status, initialize_court_sources
 import logging
 import os
 import psycopg2
@@ -10,6 +10,16 @@ from court_data import get_db_connection
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+# Initialize court sources if needed
+if 'sources_initialized' not in st.session_state:
+    try:
+        initialize_court_sources()
+        st.session_state.sources_initialized = True
+        logger.info("Court sources initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing court sources: {str(e)}")
+        st.error("Failed to initialize court sources. Please try again.")
 
 def format_timestamp(ts):
     """Format timestamp for display"""
